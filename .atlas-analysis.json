@@ -1,0 +1,90 @@
+{
+  "projectType": "data-platform",
+  "projectName": "Databas",
+  "projectDescription": "A toy SQLite-like database system implemented in Rust for educational purposes",
+  "theme": "aspen",
+  "primaryColor": "#CE422B",
+  "lightColor": "#F97316",
+  "darkColor": "#9A3412",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/file-format",
+              "architecture/page-structure",
+              "architecture/btree"
+            ]
+          },
+          {
+            "group": "SQL Support",
+            "pages": [
+              "sql/overview",
+              "sql/statements",
+              "sql/expressions"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Engine",
+            "pages": [
+              "api/core/disk-manager",
+              "api/core/database-header",
+              "api/core/page-cache",
+              "api/core/table-pages"
+            ]
+          },
+          {
+            "group": "SQL Parser",
+            "pages": [
+              "api/parser/overview",
+              "api/parser/lexer",
+              "api/parser/parser"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "api/cli/usage"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "SQLite-like page-based storage engine",
+    "B-tree table page implementation",
+    "SQL parser with SELECT, INSERT, CREATE TABLE support",
+    "Database file format with checksums and validation",
+    "Disk manager with page allocation and caching"
+  ],
+  "publicApiSurface": [
+    "DiskManager::new()",
+    "DiskManager::read_page()",
+    "DiskManager::write_page()",
+    "DiskManager::new_page()",
+    "DatabaseHeader::read()",
+    "DatabaseHeader::write()",
+    "TableLeafPageMut::insert()",
+    "TableLeafPageRef::search()",
+    "Parser::new()",
+    "Parser::stmt()",
+    "Lexer::new()"
+  ]
+}

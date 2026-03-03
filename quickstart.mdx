@@ -1,80 +1,228 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Build and run Databas in minutes
 ---
 
-## Get started in three steps
+# Quickstart
 
-Get your documentation site running locally and make your first customization.
+Get Databas running on your machine and execute your first SQL queries.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+You need Rust installed on your system. If you don't have it, install it from [rustup.rs](https://rustup.rs).
+
+Verify your installation:
+
+```bash
+rustc --version
+```
+
+## Clone the repository
+
+<Steps>
+  <Step title="Clone from GitHub">
+    Clone the Databas repository to your local machine:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    git clone https://github.com/writemorecode/databas.git
+    cd databas
+    ```
+  </Step>
+  
+  <Step title="Build the project">
+    Build all workspace crates using Cargo:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```bash
+    cargo build --release
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    This compiles three crates:
+    - `databas_cli` - Command-line interface
+    - `databas_core` - Database engine
+    - `databas_sql_parser` - SQL parser
+    
+    The compiled binary will be located at `target/release/databas_cli`.
+  </Step>
+  
+  <Step title="Run the CLI">
+    Start the interactive REPL:
+    
+    ```bash
+    cargo run --bin databas_cli
+    ```
+    
+    You should see the `>>>` prompt:
+    
+    ```
+    >>>
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Your first queries
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+The current version parses SQL statements and displays the parsed output. Try these examples in the REPL:
 
-### Step 3: Go live
+### Create a table
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+```sql
+>>> CREATE TABLE products (id INT PRIMARY KEY, name TEXT, price FLOAT);
+```
+
+Output:
+```
+'CREATE TABLE products (id INT PRIMARY KEY, name TEXT, price FLOAT);'
+```
+
+### Insert data
+
+```sql
+>>> INSERT INTO products (id, name, price) VALUES (123, 'Cake', 45.67);
+```
+
+Output:
+```
+'INSERT INTO products (id, name, price) VALUES (123, 'Cake', 45.67);'
+```
+
+You can insert multiple rows in one statement:
+
+```sql
+>>> INSERT INTO products (id, name, price) VALUES (123, 'Cake', 45.67), (789, 'Waffles', 10.00);
+```
+
+### Query data
+
+```sql
+>>> SELECT name, price FROM products WHERE price > 10.00 ORDER BY price DESC;
+```
+
+Output:
+```
+'SELECT name, price FROM products WHERE price > 10.00 ORDER BY price DESC;'
+```
+
+### Use expressions
+
+The parser supports arithmetic expressions and operators:
+
+```sql
+>>> SELECT id * 2, price + 5.00 FROM products;
+```
+
+### Exit the REPL
+
+Type `exit` to quit:
+
+```
+>>> exit
+```
+
+## Single query mode
+
+You can execute a single query without entering the REPL by passing it as an argument:
+
+```bash
+cargo run --bin databas_cli "SELECT * FROM products WHERE id = 123;"
+```
+
+## Understanding the output
+
+The CLI currently displays the parsed SQL statement as a string representation. This demonstrates that the parser successfully:
+
+1. **Tokenized** the input SQL into tokens (keywords, identifiers, operators, literals)
+2. **Parsed** the tokens into an abstract syntax tree (AST)
+3. **Validated** the SQL syntax structure
+4. **Formatted** the AST back to a normalized SQL string
+
+From the source code in `crates/databas_cli/src/main.rs:4-15`:
+
+```rust
+fn run(buf: String) {
+    let parser = Parser::new(&buf);
+    for tree in parser {
+        match tree {
+            Ok(t) => println!("'{t}'"),
+            Err(err) => {
+                eprintln!("ERROR: {err}");
+                return;
+            }
+        }
+    }
+    println!();
+}
+```
+
+## Supported SQL features
+
+The parser currently supports:
+
+<CardGroup cols={2}>
+  <Card title="Data types" icon="database">
+    - `INT` - Integer values
+    - `FLOAT` - Floating-point numbers
+    - `TEXT` - String values
+  </Card>
+  
+  <Card title="Constraints" icon="lock">
+    - `PRIMARY KEY`
+    - `NULLABLE`
+  </Card>
+  
+  <Card title="Statements" icon="code">
+    - `SELECT` with columns and wildcards
+    - `INSERT` with single or multiple rows
+    - `CREATE TABLE` with column definitions
+  </Card>
+  
+  <Card title="Clauses" icon="filter">
+    - `WHERE` with expressions
+    - `ORDER BY` with ASC/DESC
+    - `LIMIT` and `OFFSET`
+  </Card>
+</CardGroup>
+
+## Error handling
+
+If you enter invalid SQL, the parser will report an error with position information:
+
+```sql
+>>> SELECT FROM products;
+```
+
+Output:
+```
+ERROR: Expected expression at position ...
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Learn about the database internals
+  </Card>
+  
+  <Card title="SQL Reference" icon="book" href="/sql/overview">
+    Complete SQL syntax reference
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+### Build errors
+
+If you encounter build errors, make sure you have Rust edition 2024 support:
+
+```bash
+rustup update
+```
+
+### Can't find cargo command
+
+Make sure Cargo is in your PATH:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Add this to your shell profile (`.bashrc`, `.zshrc`, etc.) to make it permanent.

@@ -1,0 +1,226 @@
+---
+title: Database file format
+description: Binary layout and specification of Databas database files
+---
+
+Databas database files are organized as a sequence of fixed-size pages. Every database file must start with a valid header page, followed by data pages.
+
+## File structure
+
+A database file is simply a sequence of pages with no gaps:
+
+```
+┌─────────────────────┐  Offset 0
+│   Header Page (0)   │
+├─────────────────────┤  Offset 4096
+│   Data Page (1)     │
+├─────────────────────┤  Offset 8192
+│   Data Page (2)     │
+├─────────────────────┤
+│        ...          │
+└─────────────────────┘
+```
+
+The file size must always be a multiple of `PAGE_SIZE` (4096 bytes). The `DiskManager` validates this constraint when opening existing files (disk_manager.rs:43-45):
+
+```rust
+if !file_size.is_multiple_of(PAGE_SIZE as u64) {
+    return Err(DiskManagerError::InvalidFileSize { size: file_size });
+}
+```
+
+## Page addressing
+
+Pages are addressed using 64-bit page IDs starting from 0. The disk offset for a page is calculated as (disk_manager.rs:115-117):
+
+```rust
+fn page_offset(page_id: PageId) -> u64 {
+    page_id * (PAGE_SIZE as u64)
+}
+```
+
+Special page IDs (database_header.rs:6-7):
+
+- `HEADER_PAGE_ID = 0`: Database header
+- `FIRST_DATA_PAGE_ID = 1`: First user data page
+
+## Header page format
+
+Page 0 contains the database header with critical metadata. The header uses little-endian byte order for all multi-byte fields.
+
+### Header layout
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 16 | Magic | Database format identifier |
+| 16 | 2 | Page size | Must equal `PAGE_SIZE` (4096) |
+| 18 | 8 | Page count | Total number of pages in file |
+| 26 | 4066 | Reserved | Zero-filled |
+| 4092 | 4 | Checksum | CRC32 of bytes 0-4091 |
+
+The header constants are defined in database_header.rs:9-13:
+
+```rust
+const DATABASE_MAGIC: [u8; 16] = *b"databas format1\0";
+const MAGIC_OFFSET: usize = 0;
+const MAGIC_SIZE: usize = DATABASE_MAGIC.len();
+const PAGE_SIZE_OFFSET: usize = MAGIC_OFFSET + MAGIC_SIZE;
+const PAGE_COUNT_OFFSET: usize = PAGE_SIZE_OFFSET + 2;
+```
+
+### Magic bytes
+
+The magic bytes identify a valid Databas database file:
+
+```
+64 61 74 61 62 61 73 20  66 6f 72 6d 61 74 31 00
+d  a  t  a  b  a  s     f  o  r  m  a  t  1  \0
+```
+
+This 16-byte sequence must appear at offset 0. Files with incorrect magic bytes are rejected immediately (database_header.rs:33-35):
+
+```rust
+if page[MAGIC_OFFSET..MAGIC_OFFSET + MAGIC_SIZE] != DATABASE_MAGIC {
+    return Err(DatabaseHeaderError::InvalidMagic);
+}
+```
+
+### Page size field
+
+The page size field (offset 16-17) must match the compiled `PAGE_SIZE` constant. This ensures databases can only be opened by compatible binaries.
+
+Validation (database_header.rs:37-43):
+
+```rust
+let page_size = read_u16(page, PAGE_SIZE_OFFSET);
+if page_size != PAGE_SIZE as u16 {
+    return Err(DatabaseHeaderError::InvalidPageSize {
+        actual: page_size,
+        expected: PAGE_SIZE,
+    });
+}
+```
+
+<Info>
+  The page size is stored as a `u16`, which limits the maximum page size to 65,535 bytes. The current implementation uses 4096-byte pages.
+</Info>
+
+### Page count field
+
+The page count (offset 18-25) tracks the total number of pages in the file. This must match the actual file size:
+
+```
+expected_page_count = file_size / PAGE_SIZE
+```
+
+The page count is validated on open and updated whenever pages are allocated (disk_manager.rs:74).
+
+## Page checksums
+
+Every page reserves the last 4 bytes for a CRC32 checksum covering bytes 0-4091. This detects corruption from disk errors, incomplete writes, or memory corruption.
+
+### Checksum calculation
+
+Checksums are computed using the CRC32 algorithm (page_checksum.rs:7-9):
+
+```rust
+pub(crate) fn compute_page_checksum(page: &[u8; PAGE_SIZE]) -> u32 {
+    crc32_v2::crc32(0, &page[..PAGE_DATA_END])
+}
+```
+
+The checksum is stored in little-endian format at bytes 4092-4095.
+
+### Checksum verification
+
+The `DiskManager` validates checksums on every page read (disk_manager.rs:90-92):
+
+```rust
+if !checksum_matches(buf) {
+    return Err(DiskManagerError::InvalidPageChecksum { page_id });
+}
+```
+
+### Checksum writes
+
+Before writing a page to disk, the `DiskManager` recalculates and writes the checksum (disk_manager.rs:105-109):
+
+```rust
+let mut canonical_buf = *buf;
+write_page_checksum(&mut canonical_buf);
+let offset = Self::page_offset(page_id);
+self.file.seek(std::io::SeekFrom::Start(offset))?;
+self.file.write_all(&canonical_buf)?;
+```
+
+This ensures checksums are always consistent with page contents.
+
+<Note>
+  Checksums protect against silent data corruption but do not provide cryptographic integrity. They use CRC32, which is fast but not collision-resistant.
+</Note>
+
+## File initialization
+
+When creating a new database, the `DiskManager` initializes the header page (database_header.rs:28-30):
+
+```rust
+pub(crate) fn init_new(page: &mut [u8; PAGE_SIZE]) {
+    Self::new(FIRST_DATA_PAGE_ID).write(page);
+}
+```
+
+The `write` method (database_header.rs:48-55):
+
+```rust
+pub(crate) fn write(&self, page: &mut [u8; PAGE_SIZE]) {
+    page.fill(0);
+    page[MAGIC_OFFSET..MAGIC_OFFSET + MAGIC_SIZE].copy_from_slice(&DATABASE_MAGIC);
+    page[PAGE_SIZE_OFFSET..PAGE_SIZE_OFFSET + 2]
+        .copy_from_slice(&self.page_size.to_le_bytes());
+    page[PAGE_COUNT_OFFSET..PAGE_COUNT_OFFSET + 8]
+        .copy_from_slice(&self.page_count.to_le_bytes());
+    write_page_checksum(page);
+}
+```
+
+New databases start with a page count of 1 (just the header page).
+
+## Page allocation
+
+When allocating a new page, the `DiskManager` (disk_manager.rs:63-76):
+
+1. Assigns the next sequential page ID (`page_count`)
+2. Extends the file by one page
+3. Zero-initializes the new page
+4. Writes the page with a valid checksum
+5. Increments the page count
+6. Updates the header page
+
+```rust
+pub(crate) fn new_page(&mut self) -> DiskManagerResult<PageId> {
+    let page_id = self.page_count;
+    let new_page_id = page_id + 1;
+    let new_file_size = Self::page_offset(new_page_id);
+    self.file.set_len(new_file_size)?;
+    let mut buf = [0u8; PAGE_SIZE];
+    write_page_checksum(&mut buf);
+    let offset = Self::page_offset(page_id);
+    self.file.seek(std::io::SeekFrom::Start(offset))?;
+    self.file.write_all(&buf)?;
+    self.page_count += 1;
+    self.write_header_page()?;
+    Ok(page_id)
+}
+```
+
+Page IDs are never reused, ensuring monotonically increasing allocation.
+
+## Durability guarantees
+
+Databas provides durability through:
+
+- **Atomic page writes**: Each page write is followed by `sync_all()` (disk_manager.rs:110)
+- **Header updates**: Page count changes are immediately persisted
+- **Checksum validation**: Corrupt pages are detected on read
+
+However, Databas does not implement write-ahead logging, so crashes may leave the database in an inconsistent state.

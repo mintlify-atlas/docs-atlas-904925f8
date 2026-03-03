@@ -1,0 +1,388 @@
+---
+title: Page structure
+description: Internal layout and organization of database pages
+---
+
+Databas uses a slotted page layout for both leaf and interior B-tree pages. This design allows efficient storage of variable-length records while maintaining sorted order.
+
+## Slotted page layout
+
+Each page is divided into three regions:
+
+```
+┌──────────────────────────┐  0
+│   Fixed Header           │  ← Page type, cell count, content start
+├──────────────────────────┤  8 (leaf) or 16 (interior)
+│   Slot Directory         │  ← Grows downward →
+│   (2 bytes per slot)     │
+├──────────────────────────┤
+│                          │
+│   Free Space             │  ← Unallocated region
+│                          │
+├──────────────────────────┤
+│   Cell Content           │  ← Grows upward ←
+│   (variable-length)      │
+├──────────────────────────┤  4092
+│   Page Checksum (CRC32)  │  ← Always last 4 bytes
+└──────────────────────────┘  4096
+```
+
+The slot directory and cell content grow toward each other. When they meet, the page is full.
+
+## Page types
+
+Databas defines two page types in table_page/layout.rs:4-5:
+
+```rust
+pub(super) const LEAF_PAGE_TYPE: u8 = 1;
+pub(super) const INTERIOR_PAGE_TYPE: u8 = 2;
+```
+
+The page type byte at offset 0 determines how to interpret the rest of the page.
+
+## Leaf page structure
+
+Leaf pages store actual row data and have an 8-byte header.
+
+### Leaf header layout
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Page type | Always `LEAF_PAGE_TYPE` (1) |
+| 1 | 1 | Reserved | Unused |
+| 2 | 2 | Cell count | Number of cells on the page |
+| 4 | 2 | Content start | Offset where cell content begins |
+| 6 | 2 | Reserved | Unused |
+
+The header size constant (table_page/layout.rs:7):
+
+```rust
+pub(super) const LEAF_HEADER_SIZE: usize = 8;
+```
+
+### Leaf cell format
+
+Each leaf cell contains (table_page/leaf.rs:14-16):
+
+```rust
+const PAYLOAD_LEN_SIZE: usize = 2;
+const ROW_ID_SIZE: usize = 8;
+const LEAF_CELL_PREFIX_SIZE: usize = PAYLOAD_LEN_SIZE + ROW_ID_SIZE;
+```
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 2 | Payload length |
+| 2 | 8 | Row ID (primary key) |
+| 10 | variable | Payload bytes |
+
+The decoded cell structure (table_page/leaf.rs:20):
+
+```rust
+pub(crate) struct LeafCellRef<'a> {
+    pub(crate) row_id: RowId,
+    pub(crate) payload: &'a [u8],
+}
+```
+
+### Leaf cell storage
+
+Cells are stored in the cell-content region at the end of the page. The slot directory maps logical positions to physical cell offsets.
+
+Example with 3 cells:
+
+```
+┌──────────────────┐  0
+│ Type=1, Count=3  │  Header
+├──────────────────┤  8
+│ Slot[0] → 4080   │  ┐
+│ Slot[1] → 4050   │  │ Slot directory
+│ Slot[2] → 4010   │  ┘
+├──────────────────┤  14
+│                  │
+│   Free Space     │
+│                  │
+├──────────────────┤  4010
+│ Cell[2]: row 30  │  ┐
+├──────────────────┤  │
+│ Cell[1]: row 20  │  │ Cell content
+├──────────────────┤  │
+│ Cell[0]: row 10  │  ┘
+├──────────────────┤  4092
+│   Checksum       │
+└──────────────────┘  4096
+```
+
+Note that cells are stored in physical order (high to low offsets) but accessed in logical order via the slot directory.
+
+## Interior page structure
+
+Interior pages store separator keys for B-tree navigation and have a 16-byte header.
+
+### Interior header layout
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Page type | Always `INTERIOR_PAGE_TYPE` (2) |
+| 1 | 1 | Reserved | Unused |
+| 2 | 2 | Cell count | Number of cells on the page |
+| 4 | 2 | Content start | Offset where cell content begins |
+| 6 | 2 | Reserved | Unused |
+| 8 | 8 | Rightmost child | Page ID for keys > all separators |
+
+Header constants (table_page/layout.rs:8-9):
+
+```rust
+pub(super) const INTERIOR_HEADER_SIZE: usize = 16;
+pub(super) const INTERIOR_RIGHTMOST_CHILD_OFFSET: usize = 8;
+```
+
+### Interior cell format
+
+Interior cells have a fixed size (table_page/interior.rs:14-16):
+
+```rust
+const LEFT_CHILD_SIZE: usize = 8;
+const ROW_ID_SIZE: usize = 8;
+const INTERIOR_CELL_SIZE: usize = LEFT_CHILD_SIZE + ROW_ID_SIZE;
+```
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 8 | Left child page ID |
+| 8 | 8 | Separator row ID |
+
+The decoded cell structure (table_page/interior.rs:20):
+
+```rust
+pub(crate) struct InteriorCell {
+    pub(crate) left_child: PageId,
+    pub(crate) row_id: RowId,
+}
+```
+
+### Interior cell semantics
+
+Each cell's `left_child` pointer leads to a subtree containing rows with IDs less than the cell's `row_id`. The header's `rightmost_child` handles keys greater than all separators.
+
+For a page with separators [10, 20, 30]:
+
+- `cell[0].left_child`: rows < 10
+- `cell[1].left_child`: rows [10, 20)
+- `cell[2].left_child`: rows [20, 30)
+- `rightmost_child`: rows ≥ 30
+
+<Info>
+  The separator row ID may or may not exist in the left child subtree. It serves only as a routing key for navigation.
+</Info>
+
+## Slot directory
+
+The slot directory maintains logical-to-physical cell mappings. Slots are 2-byte offsets into the cell-content region (table_page/layout.rs:14):
+
+```rust
+const SLOT_WIDTH: usize = 2;
+```
+
+Slots are stored sequentially after the fixed header:
+
+```
+slot_position = header_size + (slot_index * 2)
+```
+
+The implementation (table_page/layout.rs:307-317):
+
+```rust
+fn slot_position(spec: PageSpec, slot_index: usize) -> TablePageResult<usize> {
+    let position = spec.header_size + (slot_index * SLOT_WIDTH);
+
+    if position + SLOT_WIDTH > PAGE_DATA_END {
+        return Err(TablePageError::CorruptPage(
+            TablePageCorruptionKind::SlotDirectoryExceedsPageSize,
+        ));
+    }
+
+    Ok(position)
+}
+```
+
+## Free space calculation
+
+Free space is the gap between the slot directory and cell content (table_page/layout.rs:103-109):
+
+```rust
+pub(super) fn free_space(page: &[u8; PAGE_SIZE], spec: PageSpec) -> TablePageResult<usize> {
+    validate(page, spec)?;
+
+    let slot_dir_end = slot_dir_end_for_count(spec, usize::from(cell_count(page)))?;
+    let content_start = usize::from(content_start(page));
+    Ok(content_start - slot_dir_end)
+}
+```
+
+Where:
+
+```
+slot_dir_end = header_size + (cell_count * 2)
+content_start = (from header field)
+free_space = content_start - slot_dir_end
+```
+
+## Page initialization
+
+Empty pages are initialized with zeroed bytes and minimal header values (table_page/layout.rs:66-72):
+
+```rust
+pub(super) fn init_empty(page: &mut [u8; PAGE_SIZE], spec: PageSpec) -> TablePageResult<()> {
+    page.fill(0);
+    page[PAGE_TYPE_OFFSET] = spec.page_type;
+    set_cell_count(page, 0);
+    set_content_start(page, PAGE_DATA_END);
+    Ok()
+}
+```
+
+The `content_start` field is set to `PAGE_DATA_END` (4092) because no cells exist yet.
+
+## Cell insertion
+
+Inserting a cell involves two steps:
+
+1. **Append cell content**: Allocate space at the end of the cell-content region
+2. **Insert slot**: Add a new slot entry maintaining sorted order
+
+The append operation (table_page/layout.rs:136-161):
+
+```rust
+pub(super) fn try_append_cell(
+    page: &mut [u8; PAGE_SIZE],
+    spec: PageSpec,
+    cell: &[u8],
+) -> TablePageResult<Result<u16, SpaceError>> {
+    validate(page, spec)?;
+
+    let cell_len = cell.len();
+    if cell_len > usize::from(u16::MAX) {
+        return Err(TablePageError::CellTooLarge { 
+            len: cell_len, 
+            max: usize::from(u16::MAX) 
+        });
+    }
+
+    let current_count = usize::from(cell_count(page));
+    let slot_dir_end_after = slot_dir_end_for_count(spec, current_count)?;
+    let content_start = usize::from(content_start(page));
+    let available = content_start.saturating_sub(slot_dir_end_after);
+
+    if cell_len > available {
+        return Ok(Err(SpaceError { needed: cell_len, available }));
+    }
+
+    let new_start = content_start - cell_len;
+    page[new_start..content_start].copy_from_slice(cell);
+    set_content_start(page, new_start);
+    Ok(Ok(new_start as u16))
+}
+```
+
+The slot insertion (table_page/layout.rs:211-243) shifts existing slots to make room.
+
+<Note>
+  Cell insertions never fail due to insufficient space alone. If space is tight, the page is defragmented first to reclaim gaps from deleted cells.
+</Note>
+
+## Defragmentation
+
+When cells are deleted or updated with different sizes, gaps appear in the cell-content region. Defragmentation reclaims this space.
+
+The process (table_page/leaf.rs:296-343):
+
+1. Copy all live cells to a scratch buffer
+2. Reinitialize the page header
+3. Append cells from scratch back to the page
+4. Recreate the slot directory
+
+```rust
+fn defragment_leaf_page(page: &mut [u8; PAGE_SIZE]) -> TablePageResult<()> {
+    layout::validate(page, LEAF_SPEC)?;
+
+    let cell_count = usize::from(layout::cell_count(page));
+    let mut scratch = [0u8; PAGE_SIZE];
+    let mut scratch_len = 0usize;
+
+    // Copy live cells to scratch
+    for slot in 0..cell_count {
+        let slot_u16 = slot as u16;
+        let cell = layout::cell_bytes_at_slot_on_valid_page(page, LEAF_SPEC, slot_u16)?;
+        let cell_len = leaf_cell_len(cell)
+            .map_err(|_| TablePageError::CorruptCell { slot_index: slot_u16 })?;
+
+        let next = scratch_len + cell_len;
+        scratch[scratch_len..next].copy_from_slice(&cell[..cell_len]);
+        scratch_len = next;
+    }
+
+    // Reinitialize page
+    layout::init_empty(page, LEAF_SPEC)?;
+
+    // Restore cells from scratch
+    let mut scratch_offset = 0usize;
+    for slot in 0..cell_count {
+        let slot_u16 = slot as u16;
+        let cell = &scratch[scratch_offset..scratch_len];
+        let cell_len = leaf_cell_len(cell)
+            .map_err(|_| TablePageError::CorruptCell { slot_index: slot_u16 })?;
+        let next = scratch_offset + cell_len;
+        let cell_offset = match layout::try_append_cell_for_insert(
+            page,
+            LEAF_SPEC,
+            &scratch[scratch_offset..next],
+        )? {
+            Ok(offset) => offset,
+            Err(_) => {
+                return Err(TablePageError::CorruptPage(
+                    TablePageCorruptionKind::CellContentUnderflow,
+                ));
+            }
+        };
+        layout::insert_slot(page, LEAF_SPEC, slot_u16, cell_offset)?;
+        scratch_offset = next;
+    }
+
+    Ok()
+}
+```
+
+After defragmentation, cells are packed contiguously with no gaps.
+
+## Page validation
+
+Every page access validates internal consistency (table_page/layout.rs:75-90):
+
+```rust
+pub(super) fn validate(page: &[u8; PAGE_SIZE], spec: PageSpec) -> TablePageResult<()> {
+    let page_type = page[PAGE_TYPE_OFFSET];
+    if page_type != spec.page_type {
+        return Err(TablePageError::InvalidPageType { page_type });
+    }
+
+    let cell_count = usize::from(cell_count(page));
+    let slot_dir_end = slot_dir_end_for_count(spec, cell_count)?;
+    let content_start = usize::from(content_start(page));
+
+    if content_start < slot_dir_end || content_start > PAGE_DATA_END {
+        return Err(TablePageError::CorruptPage(
+            TablePageCorruptionKind::InvalidCellContentStart
+        ));
+    }
+
+    Ok()
+}
+```
+
+This catches corruption like:
+
+- Wrong page type
+- Slot directory overlapping cell content
+- Content start pointer out of bounds
+- Slot directory exceeding page bounds

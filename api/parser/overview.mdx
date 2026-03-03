@@ -1,0 +1,100 @@
+---
+title: SQL Parser Overview
+description: Overview of the databas_sql_parser crate and its architecture
+---
+
+The `databas_sql_parser` crate provides a complete SQL parsing solution for Databas, implementing lexical analysis and syntax parsing for SQL statements.
+
+## Architecture
+
+The parser is organized into two main components:
+
+- **Lexer**: Tokenizes SQL source text into a stream of tokens
+- **Parser**: Builds an Abstract Syntax Tree (AST) from the token stream
+
+## Module Structure
+
+```rust
+pub mod error;
+pub mod lexer;
+pub mod parser;
+```
+
+### Lexer Module
+
+The lexer module handles tokenization of SQL source code:
+
+- `token`: Defines the `Token` struct representing a token with its position
+- `token_kind`: Enumerates all token types including keywords, operators, and literals
+- `Lexer`: Iterator that produces tokens from input text
+
+### Parser Module
+
+The parser module constructs AST nodes from tokens:
+
+- `expr`: Expression types including literals, identifiers, operators, and aggregate functions
+- `op`: Operator types and precedence rules
+- `stmt`: SQL statement types (SELECT, INSERT, CREATE TABLE)
+- `Parser`: Iterator that produces statements from the lexer
+
+### Error Module
+
+The error module defines `SQLError` and `SQLErrorKind` for detailed error reporting with position information.
+
+## Supported SQL Statements
+
+The parser currently supports:
+
+- **SELECT**: Query data with WHERE, ORDER BY, LIMIT, and OFFSET clauses
+- **INSERT**: Insert rows with multiple value tuples
+- **CREATE TABLE**: Define tables with typed columns and constraints
+
+## Usage Example
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let sql = "SELECT id, name FROM users WHERE age > 18;";
+let mut parser = Parser::new(sql);
+
+for result in parser {
+    match result {
+        Ok(statement) => println!("Parsed: {}", statement),
+        Err(error) => eprintln!("Parse error: {}", error),
+    }
+}
+```
+
+## Expression Parsing
+
+The parser uses Pratt parsing (operator precedence parsing) to handle expressions with correct precedence and associativity:
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let parser = Parser::new("12 + 34 * 56");
+let expr = parser.expr().unwrap();
+// Correctly parses as: 12 + (34 * 56)
+```
+
+## Error Handling
+
+All parsing operations return `Result` types with detailed error information:
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::error::{SQLError, SQLErrorKind};
+
+let mut parser = Parser::new("SELECT");
+match parser.stmt() {
+    Ok(stmt) => println!("Success: {}", stmt),
+    Err(SQLError { kind, pos }) => {
+        eprintln!("Error at position {}: {}", pos, kind);
+    }
+}
+```
+
+## Next Steps
+
+- [Lexer API Reference](/api/parser/lexer) - Detailed lexer API documentation
+- [Parser API Reference](/api/parser/parser) - Detailed parser API documentation

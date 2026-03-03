@@ -1,0 +1,339 @@
+---
+title: Lexer API
+description: Lexical analyzer for SQL source code
+---
+
+The lexer module provides tokenization of SQL source text into a stream of tokens. It handles keywords, identifiers, literals, operators, and comments.
+
+## Lexer
+
+The main lexer struct that tokenizes SQL source code.
+
+```rust
+pub struct Lexer<'a> {
+    pub source: &'a str,
+    pub rest: &'a str,
+    pub position: usize,
+    pub peeked: Option<Result<Token<'a>, SQLError<'a>>>,
+}
+```
+
+<ParamField path="source" type="&'a str">
+  The original source string
+</ParamField>
+
+<ParamField path="rest" type="&'a str">
+  The remaining unparsed portion of the source
+</ParamField>
+
+<ParamField path="position" type="usize">
+  Current byte position in the source
+</ParamField>
+
+<ParamField path="peeked" type="Option<Result<Token<'a>, SQLError<'a>>>">
+  Cached next token for lookahead
+</ParamField>
+
+### Constructor
+
+```rust
+pub fn new(source: &'a str) -> Self
+```
+
+Creates a new lexer for the given source string.
+
+**Example:**
+
+```rust
+use databas_sql_parser::lexer::Lexer;
+
+let lexer = Lexer::new("SELECT * FROM users;");
+```
+
+### Methods
+
+#### peek
+
+```rust
+pub fn peek(&mut self) -> Option<&Result<Token<'a>, SQLError<'_>>>
+```
+
+Peeks at the next token without consuming it. Returns a reference to the next token result.
+
+**Example:**
+
+```rust
+let mut lexer = Lexer::new("SELECT * FROM users");
+
+if let Some(Ok(token)) = lexer.peek() {
+    println!("Next token: {:?}", token.kind);
+}
+```
+
+#### expect_token
+
+```rust
+pub fn expect_token(&mut self, expected: TokenKind<'a>) -> Result<(), SQLError<'a>>
+```
+
+Consumes the next token and verifies it matches the expected token kind. Returns an error if the token doesn't match or if the input ends unexpectedly.
+
+<ParamField path="expected" type="TokenKind<'a>">
+  The expected token kind
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::lexer::Lexer;
+use databas_sql_parser::lexer::token_kind::{TokenKind, Keyword};
+
+let mut lexer = Lexer::new("SELECT * FROM users");
+lexer.expect_token(TokenKind::Keyword(Keyword::Select)).unwrap();
+```
+
+#### expect_where
+
+```rust
+pub fn expect_where(
+    &mut self,
+    check: impl Fn(TokenKind<'a>) -> bool,
+) -> Result<(), SQLError<'a>>
+```
+
+Consumes the next token and verifies it satisfies the given predicate.
+
+<ParamField path="check" type="impl Fn(TokenKind<'a>) -> bool">
+  Predicate function to validate the token
+</ParamField>
+
+**Example:**
+
+```rust
+let mut lexer = Lexer::new("123 + 456");
+lexer.expect_where(|kind| matches!(kind, TokenKind::Number(_))).unwrap();
+```
+
+### Iterator Implementation
+
+The `Lexer` implements `Iterator`, producing tokens until the end of input.
+
+```rust
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Result<Token<'a>, SQLError<'a>>;
+    
+    fn next(&mut self) -> Option<Self::Item>;
+}
+```
+
+**Example:**
+
+```rust
+let lexer = Lexer::new("SELECT id, name FROM users");
+
+for token_result in lexer {
+    match token_result {
+        Ok(token) => println!("{}", token),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+```
+
+## Token
+
+Represents a single token with its kind and position.
+
+```rust
+pub struct Token<'a> {
+    pub kind: TokenKind<'a>,
+    pub offset: usize,
+}
+```
+
+<ParamField path="kind" type="TokenKind<'a>">
+  The type and value of the token
+</ParamField>
+
+<ParamField path="offset" type="usize">
+  Byte offset where this token starts in the source
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::lexer::Lexer;
+
+let mut lexer = Lexer::new("SELECT");
+let token = lexer.next().unwrap().unwrap();
+
+assert_eq!(token.offset, 0);
+println!("Token at position {}: {}", token.offset, token.kind);
+```
+
+## TokenKind
+
+Enumerates all possible token types.
+
+```rust
+pub enum TokenKind<'a> {
+    String(&'a str),
+    Identifier(&'a str),
+    Keyword(Keyword),
+    Number(NumberKind),
+    LeftParen,
+    RightParen,
+    Plus,
+    Minus,
+    Equals,
+    NotEquals,
+    EqualsEquals,
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
+    Asterisk,
+    Comma,
+    Semicolon,
+    Slash,
+}
+```
+
+### Keyword
+
+SQL keywords recognized by the lexer.
+
+```rust
+pub enum Keyword {
+    Select,
+    From,
+    Where,
+    Order,
+    By,
+    Asc,
+    Desc,
+    True,
+    False,
+    And,
+    Or,
+    Not,
+    Limit,
+    Offset,
+    Insert,
+    Into,
+    Values,
+    Create,
+    Table,
+    Int,
+    Float,
+    Text,
+    Aggregate(Aggregate),
+    Primary,
+    Key,
+    Nullable,
+}
+```
+
+### Aggregate
+
+Aggregate function keywords.
+
+```rust
+pub enum Aggregate {
+    Sum,
+    Avg,
+    StdDev,
+    Min,
+    Max,
+    Count,
+}
+```
+
+### NumberKind
+
+Numeric literal types.
+
+```rust
+pub enum NumberKind {
+    Integer(i32),
+    Float(f32),
+}
+```
+
+## Comment Handling
+
+The lexer automatically skips whitespace and comments:
+
+- **Line comments**: Start with `--` and continue to end of line
+- **Block comments**: Enclosed in `/* */`
+
+**Example:**
+
+```rust
+let lexer = Lexer::new("
+    -- This is a comment
+    SELECT /* inline comment */ id
+    FROM users
+");
+
+for token in lexer {
+    // Comments are automatically filtered out
+    println!("{:?}", token);
+}
+```
+
+## String Literals
+
+The lexer supports both single and double-quoted strings:
+
+```rust
+let mut lexer = Lexer::new("'hello' \"world\"");
+
+let token1 = lexer.next().unwrap().unwrap();
+assert!(matches!(token1.kind, TokenKind::String("hello")));
+
+let token2 = lexer.next().unwrap().unwrap();
+assert!(matches!(token2.kind, TokenKind::String("world")));
+```
+
+## Case-Insensitive Keywords
+
+Keywords are recognized case-insensitively:
+
+```rust
+let lexer = Lexer::new("sEleCT FrOm WhErE");
+
+for result in lexer {
+    if let Ok(token) = result {
+        // All recognized as keywords despite mixed case
+        assert!(matches!(token.kind, TokenKind::Keyword(_)));
+    }
+}
+```
+
+## Error Handling
+
+The lexer returns detailed errors for invalid input:
+
+```rust
+use databas_sql_parser::lexer::Lexer;
+use databas_sql_parser::error::{SQLError, SQLErrorKind};
+
+let mut lexer = Lexer::new("\"unterminated string");
+let result = lexer.next().unwrap();
+
+assert!(matches!(
+    result,
+    Err(SQLError { kind: SQLErrorKind::UnterminatedString, .. })
+));
+```
+
+## Unicode Support
+
+Identifiers support Unicode alphabetic characters:
+
+```rust
+let mut lexer = Lexer::new("åäö");
+let token = lexer.next().unwrap().unwrap();
+
+assert!(matches!(token.kind, TokenKind::Identifier("åäö")));
+```

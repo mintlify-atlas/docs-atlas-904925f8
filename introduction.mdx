@@ -1,0 +1,109 @@
+---
+title: Introduction to Databas
+description: A toy SQLite-like database system implemented in Rust for educational purposes
+---
+
+# Introduction to Databas
+
+Databas is a toy SQLite-like database system implemented in Rust for educational purposes. It demonstrates core database concepts including page-based storage, SQL parsing, and query execution.
+
+<Note>
+  This is a work-in-progress educational project. It is not intended for production use.
+</Note>
+
+## What is Databas?
+
+Databas implements a simplified relational database system that uses many of the same concepts found in SQLite:
+
+- **Page-based storage** with a custom binary format
+- **SQL parser** that handles SELECT, INSERT, and CREATE TABLE statements
+- **Command-line interface** for interactive queries
+- **B-tree data structures** for efficient table storage
+- **Page cache** with clock replacement algorithm
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="SQL Parser" icon="code">
+    Hand-written lexer and parser supporting SELECT, INSERT, and CREATE TABLE statements with expressions, WHERE clauses, ORDER BY, and LIMIT.
+  </Card>
+  
+  <Card title="Page-based Storage" icon="database">
+    Custom binary format with 4KB pages, magic number validation, and checksums. Supports both leaf and interior B-tree pages.
+  </Card>
+  
+  <Card title="Type System" icon="brackets-curly">
+    Supports INT, FLOAT, and TEXT column types with PRIMARY KEY and NULLABLE constraints.
+  </Card>
+  
+  <Card title="Interactive CLI" icon="terminal">
+    Command-line interface with REPL mode for executing queries and viewing parsed SQL statements.
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+Databas is organized as a Rust workspace with three main crates:
+
+### databas_cli
+
+The command-line interface that provides:
+- Interactive REPL with `>>>` prompt
+- Single query execution mode
+- SQL statement parsing and display
+
+### databas_core
+
+The core database engine implementing:
+- `DatabaseHeader` - Database metadata with magic number `databas format1\0`
+- `DiskManager` - File I/O operations for reading and writing pages
+- `PageCache` - In-memory cache with clock replacement and pin guards
+- `TablePage` - B-tree page structures (leaf and interior nodes)
+- Page checksums for data integrity
+
+### databas_sql_parser
+
+The SQL parsing layer featuring:
+- `Lexer` - Tokenizes SQL statements
+- `Parser` - Builds abstract syntax trees using Pratt parsing
+- Support for expressions, operators, aggregates, and literals
+- Error handling with position tracking
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build from source and run your first queries
+  </Card>
+  
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Deep dive into the database internals
+  </Card>
+</CardGroup>
+
+## Example queries
+
+Databas supports standard SQL syntax for table creation, data insertion, and queries:
+
+```sql
+CREATE TABLE products (id INT PRIMARY KEY, name TEXT, price FLOAT);
+```
+
+```sql
+INSERT INTO products (id, name, price) VALUES (123, 'Cake', 45.67);
+```
+
+```sql
+SELECT name, price FROM products WHERE price > 10.00 ORDER BY price DESC;
+```
+
+## Why Databas?
+
+This project is designed for learning:
+
+- **Understand database internals** - See how page-based storage actually works
+- **Learn Rust** - Practical example of systems programming with Rust
+- **Study parsing** - Hand-written lexer and parser implementation
+- **Explore data structures** - B-trees, page caches, and disk management
+
+The codebase is intentionally kept simple and readable to serve as a learning resource.

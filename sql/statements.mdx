@@ -1,0 +1,369 @@
+---
+title: Supported SQL statements
+description: Detailed reference for SELECT, INSERT, and CREATE TABLE statements in Databas
+---
+
+Databas supports three core SQL statements. Each statement has specific syntax requirements and capabilities.
+
+## SELECT statement
+
+The `SELECT` statement retrieves data from tables or evaluates expressions.
+
+### Basic syntax
+
+```sql
+SELECT column1, column2, column3;
+```
+
+You can select expressions without a table:
+
+```sql
+SELECT 1 + 2;
+SELECT 'Hello, World!';
+SELECT 3.14 * 2;
+```
+
+### FROM clause
+
+Specify a table to query:
+
+```sql
+SELECT id, name, email FROM users;
+```
+
+<Note>
+Databas only supports selecting from a single table. Joins are not supported.
+</Note>
+
+### WHERE clause
+
+Filter rows based on a condition:
+
+```sql
+SELECT id, name FROM users WHERE age > 18;
+SELECT * FROM products WHERE price <= 100.00;
+SELECT name FROM customers WHERE active == true;
+```
+
+The WHERE clause accepts any valid expression that evaluates to a boolean.
+
+### ORDER BY clause
+
+Sort results by one or more expressions:
+
+```sql
+-- Sort by single column ascending (default)
+SELECT name, age FROM users ORDER BY age;
+
+-- Sort descending
+SELECT name, price FROM products ORDER BY price DESC;
+
+-- Sort ascending (explicit)
+SELECT name FROM users ORDER BY name ASC;
+
+-- Sort by multiple columns
+SELECT name, age FROM users ORDER BY age, name DESC;
+```
+
+<Note>
+When ordering by multiple columns, the ordering direction (`ASC` or `DESC`) applies to all columns in the list.
+</Note>
+
+### LIMIT clause
+
+Restrict the number of results:
+
+```sql
+SELECT * FROM users LIMIT 10;
+SELECT name FROM products ORDER BY price DESC LIMIT 5;
+```
+
+The `LIMIT` value must be a non-negative integer.
+
+### OFFSET clause
+
+Skip a number of rows before returning results:
+
+```sql
+SELECT * FROM users OFFSET 10;
+SELECT * FROM users LIMIT 10 OFFSET 20;
+```
+
+Combining `LIMIT` and `OFFSET` enables pagination:
+
+```sql
+-- Page 1 (first 10 rows)
+SELECT * FROM users LIMIT 10 OFFSET 0;
+
+-- Page 2 (next 10 rows)
+SELECT * FROM users LIMIT 10 OFFSET 10;
+
+-- Page 3 (next 10 rows)
+SELECT * FROM users LIMIT 10 OFFSET 20;
+```
+
+### Wildcard selector
+
+Use `*` to select all columns:
+
+```sql
+SELECT * FROM users;
+SELECT * FROM products WHERE price > 50;
+```
+
+### Aggregate functions
+
+Compute aggregate values:
+
+<Tabs>
+  <Tab title="COUNT">
+    Count the number of rows:
+    ```sql
+    SELECT COUNT(*) FROM users;
+    SELECT COUNT(email) FROM users;
+    ```
+  </Tab>
+  <Tab title="SUM">
+    Calculate the sum:
+    ```sql
+    SELECT SUM(price) FROM products;
+    SELECT SUM(quantity * price) FROM order_items;
+    ```
+  </Tab>
+  <Tab title="AVG">
+    Calculate the average:
+    ```sql
+    SELECT AVG(price) FROM products;
+    SELECT AVG(age) FROM users;
+    ```
+  </Tab>
+  <Tab title="MIN / MAX">
+    Find minimum or maximum values:
+    ```sql
+    SELECT MIN(price), MAX(price) FROM products;
+    SELECT MIN(age) FROM users WHERE active == true;
+    ```
+  </Tab>
+  <Tab title="STDDEV">
+    Calculate standard deviation:
+    ```sql
+    SELECT STDDEV(price) FROM products;
+    ```
+  </Tab>
+</Tabs>
+
+You can use multiple aggregate functions in one query:
+
+```sql
+SELECT COUNT(*), SUM(price), AVG(price), STDDEV(price), MAX(price), MIN(price) FROM products;
+```
+
+### Complete SELECT example
+
+Here's a SELECT statement using all available clauses:
+
+```sql
+SELECT foo FROM bar WHERE baz ORDER BY qux LIMIT 10 OFFSET 5;
+```
+
+## INSERT statement
+
+The `INSERT` statement adds new rows to a table.
+
+### Syntax
+
+```sql
+INSERT INTO table_name (column1, column2, column3) VALUES (value1, value2, value3);
+```
+
+### Single row insert
+
+```sql
+INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30);
+INSERT INTO products (id, name, price) VALUES (123, 'Laptop', 999.99);
+```
+
+### Multiple row insert
+
+Insert multiple rows in a single statement:
+
+```sql
+INSERT INTO products (id, name, price) 
+VALUES 
+  (123, 'Cake', 45.67), 
+  (789, 'Waffles', 10.00);
+```
+
+### Data types in INSERT
+
+You can insert different literal types:
+
+<CodeGroup>
+```sql Integers
+INSERT INTO users (id, age) VALUES (1, 25);
+```
+
+```sql Floats
+INSERT INTO products (id, price) VALUES (1, 19.99);
+```
+
+```sql Strings
+INSERT INTO users (id, name) VALUES (1, 'Alice');
+```
+
+```sql Booleans
+INSERT INTO users (id, active) VALUES (1, true);
+```
+</CodeGroup>
+
+### Requirements
+
+<Warning>
+The INSERT statement requires:
+- The `INTO` keyword after `INSERT`
+- Column names enclosed in parentheses
+- The `VALUES` keyword
+- At least one set of values enclosed in parentheses
+- All statements must end with a semicolon
+</Warning>
+
+## CREATE TABLE statement
+
+The `CREATE TABLE` statement defines a new table with columns and optional constraints.
+
+### Basic syntax
+
+```sql
+CREATE TABLE table_name (
+  column1 TYPE,
+  column2 TYPE,
+  column3 TYPE
+);
+```
+
+### Data types
+
+Databas supports three data types:
+
+- `INT` - 32-bit signed integer
+- `FLOAT` - 32-bit floating-point number
+- `TEXT` - String data
+
+### Simple table
+
+```sql
+CREATE TABLE users (
+  id INT,
+  name TEXT,
+  age INT
+);
+```
+
+### Table with all types
+
+```sql
+CREATE TABLE products (
+  id INT,
+  name TEXT,
+  price FLOAT
+);
+```
+
+### Column constraints
+
+You can add constraints to columns:
+
+#### PRIMARY KEY
+
+Mark a column as the primary key:
+
+```sql
+CREATE TABLE users (
+  id INT PRIMARY KEY,
+  name TEXT,
+  age INT
+);
+```
+
+#### NULLABLE
+
+Allow a column to contain null values:
+
+```sql
+CREATE TABLE users (
+  id INT,
+  name TEXT NULLABLE,
+  email TEXT NULLABLE
+);
+```
+
+<Note>
+By default, columns are NOT NULL. You must explicitly mark columns as `NULLABLE` if you want to allow null values.
+</Note>
+
+#### Multiple constraints
+
+You can combine constraints:
+
+```sql
+CREATE TABLE users (
+  id INT PRIMARY KEY,
+  name TEXT,
+  bio TEXT NULLABLE
+);
+```
+
+### Requirements
+
+<Warning>
+The CREATE TABLE statement requires:
+- The `TABLE` keyword after `CREATE`
+- A valid table name (not a SQL keyword)
+- At least one column definition
+- Each column must have a name and type
+- Column definitions enclosed in parentheses
+- A semicolon at the end
+</Warning>
+
+### Reserved keywords
+
+You cannot use SQL keywords as table names:
+
+```sql
+-- This will fail:
+CREATE TABLE table (id INT);
+
+-- This will succeed:
+CREATE TABLE users (id INT);
+```
+
+## Statement termination
+
+All SQL statements must end with a semicolon:
+
+```sql
+SELECT * FROM users;  -- Correct
+SELECT * FROM users   -- Error: ExpectedCommaOrSemicolon
+```
+
+## Error examples
+
+Here are common parsing errors:
+
+```sql
+-- Missing expression after SELECT
+SELECT;
+-- Error: ExpectedExpression
+
+-- Missing table name
+CREATE TABLE (id INT);
+-- Error: ExpectedIdentifier
+
+-- Invalid data type
+CREATE TABLE users (id VARCHAR);
+-- Error: InvalidDataType
+
+-- Negative LIMIT value
+SELECT * FROM users LIMIT -1;
+-- Error: ExpectedNonNegativeInteger
+```

@@ -1,0 +1,386 @@
+---
+title: Expression syntax and operators
+description: Learn about expressions, operators, and operator precedence in Databas SQL
+---
+
+Expressions are the building blocks of SQL queries in Databas. You can use expressions in `SELECT` clauses, `WHERE` conditions, `ORDER BY` terms, and more.
+
+## Expression types
+
+Databas supports several types of expressions:
+
+### Literals
+
+Literal values represent constant data:
+
+<Tabs>
+  <Tab title="Integers">
+    32-bit signed integers:
+    ```sql
+    SELECT 42;
+    SELECT -17;
+    SELECT 0;
+    ```
+  </Tab>
+  <Tab title="Floats">
+    32-bit floating-point numbers:
+    ```sql
+    SELECT 3.14;
+    SELECT -0.5;
+    SELECT 1.0;
+    ```
+  </Tab>
+  <Tab title="Strings">
+    Text values enclosed in single quotes:
+    ```sql
+    SELECT 'Hello, World!';
+    SELECT 'Databas';
+    ```
+  </Tab>
+  <Tab title="Booleans">
+    Boolean values:
+    ```sql
+    SELECT true;
+    SELECT false;
+    ```
+  </Tab>
+</Tabs>
+
+### Identifiers
+
+Identifiers refer to column names:
+
+```sql
+SELECT name, age, email FROM users;
+SELECT price * quantity FROM order_items;
+```
+
+### Wildcard
+
+The `*` wildcard selects all columns:
+
+```sql
+SELECT * FROM users;
+SELECT COUNT(*) FROM products;
+```
+
+## Operators
+
+Databas supports a variety of operators for building complex expressions.
+
+### Arithmetic operators
+
+Perform mathematical calculations:
+
+| Operator | Description | Example | Result |
+|----------|-------------|---------|--------|
+| `+` | Addition | `SELECT 5 + 3;` | `8` |
+| `-` | Subtraction | `SELECT 10 - 4;` | `6` |
+| `*` | Multiplication | `SELECT 6 * 7;` | `42` |
+| `/` | Division | `SELECT 20 / 4;` | `5` |
+
+<CodeGroup>
+```sql Addition
+SELECT price + tax FROM products;
+SELECT 100 + 50;
+```
+
+```sql Subtraction
+SELECT revenue - cost FROM transactions;
+SELECT 100 - 25;
+```
+
+```sql Multiplication
+SELECT quantity * price FROM order_items;
+SELECT 12 * 5;
+```
+
+```sql Division
+SELECT total / count FROM statistics;
+SELECT 100 / 4;
+```
+</CodeGroup>
+
+### Comparison operators
+
+Compare values and return boolean results:
+
+| Operator | Description | Example |
+|----------|-------------|----------|
+| `==` | Equal to | `age == 18` |
+| `!=` | Not equal to | `status != 'inactive'` |
+| `<` | Less than | `price < 100` |
+| `>` | Greater than | `quantity > 0` |
+| `<=` | Less than or equal | `age <= 65` |
+| `>=` | Greater than or equal | `score >= 90` |
+
+```sql
+SELECT * FROM users WHERE age >= 18;
+SELECT * FROM products WHERE price < 50.00;
+SELECT * FROM orders WHERE status == 'completed';
+SELECT * FROM inventory WHERE quantity != 0;
+```
+
+<Note>
+Databas uses `==` for equality comparison (not `=`). This follows the convention of many programming languages.
+</Note>
+
+### Logical operators
+
+Combine boolean expressions:
+
+| Operator | Description | Example |
+|----------|-------------|----------|
+| `AND` | Logical AND | `age >= 18 AND active == true` |
+| `OR` | Logical OR | `role == 'admin' OR role == 'moderator'` |
+| `NOT` | Logical NOT | `NOT deleted` |
+
+<CodeGroup>
+```sql AND operator
+SELECT * FROM users 
+WHERE age >= 18 AND verified == true;
+
+SELECT * FROM products 
+WHERE price > 10 AND price < 100;
+```
+
+```sql OR operator
+SELECT * FROM users 
+WHERE role == 'admin' OR role == 'moderator';
+
+SELECT * FROM products 
+WHERE category == 'electronics' OR category == 'computers';
+```
+
+```sql NOT operator
+SELECT * FROM users WHERE NOT deleted;
+
+SELECT * FROM posts 
+WHERE NOT (status == 'draft' OR status == 'archived');
+```
+</CodeGroup>
+
+### Unary operators
+
+Operators that work on a single operand:
+
+- **Negation (`-`)**: Negate a number
+- **NOT**: Negate a boolean
+
+```sql
+SELECT -price FROM products;
+SELECT NOT active FROM users;
+```
+
+## Operator precedence
+
+When multiple operators appear in an expression, Databas evaluates them in a specific order:
+
+1. **Unary operators**: `-`, `NOT` (highest precedence)
+2. **Multiplication and division**: `*`, `/`
+3. **Addition and subtraction**: `+`, `-`
+4. **Comparison operators**: `==`, `!=`, `<`, `>`, `<=`, `>=`
+5. **Logical AND**: `AND`
+6. **Logical OR**: `OR` (lowest precedence)
+
+### Precedence examples
+
+```sql
+-- Multiplication before addition
+SELECT 2 + 3 * 4;  -- Result: 14 (evaluated as 2 + (3 * 4))
+
+-- Comparison before AND
+SELECT * FROM users WHERE age > 18 AND status == 'active';
+-- Evaluated as: (age > 18) AND (status == 'active')
+
+-- AND before OR
+SELECT * FROM users WHERE role == 'admin' OR role == 'mod' AND verified == true;
+-- Evaluated as: (role == 'admin') OR ((role == 'mod') AND (verified == true))
+```
+
+### Using parentheses
+
+You can use parentheses to override the default precedence:
+
+```sql
+-- Force addition before multiplication
+SELECT (2 + 3) * 4;  -- Result: 20
+
+-- Force OR before AND
+SELECT * FROM users WHERE (role == 'admin' OR role == 'mod') AND verified == true;
+-- Both admins and mods must be verified
+
+-- Complex nested expressions
+SELECT * FROM products WHERE (price > 100 OR featured == true) AND in_stock == true;
+```
+
+### Precedence table
+
+Here's the complete precedence from highest to lowest:
+
+| Precedence | Operators | Associativity |
+|------------|-----------|---------------|
+| 7 | `-` (unary), `NOT` | Right |
+| 6-7 | `*`, `/` | Left |
+| 5-6 | `+`, `-` | Left |
+| 3-4 | `==`, `!=`, `<`, `>`, `<=`, `>=` | Left |
+| 1-2 | `AND`, `OR` | Left |
+
+<Note>
+The numbers indicate binding power values used internally by the Pratt parser. Left associativity means `a - b - c` is evaluated as `(a - b) - c`.
+</Note>
+
+## Aggregate functions
+
+Aggregate functions perform calculations on sets of values:
+
+### COUNT
+
+Count the number of values:
+
+```sql
+SELECT COUNT(*) FROM users;
+SELECT COUNT(email) FROM users;
+```
+
+### SUM
+
+Calculate the sum:
+
+```sql
+SELECT SUM(price) FROM products;
+SELECT SUM(quantity * price) FROM order_items;
+```
+
+### AVG
+
+Calculate the average:
+
+```sql
+SELECT AVG(price) FROM products;
+SELECT AVG(age) FROM users;
+```
+
+### MIN and MAX
+
+Find minimum and maximum values:
+
+```sql
+SELECT MIN(price) FROM products;
+SELECT MAX(price) FROM products;
+SELECT MIN(age), MAX(age) FROM users;
+```
+
+### STDDEV
+
+Calculate standard deviation:
+
+```sql
+SELECT STDDEV(price) FROM products;
+```
+
+### Combining aggregates
+
+You can use multiple aggregate functions in one query:
+
+```sql
+SELECT 
+  COUNT(*), 
+  SUM(price), 
+  AVG(price), 
+  STDDEV(price), 
+  MAX(price), 
+  MIN(price) 
+FROM products;
+```
+
+## Complex expression examples
+
+Here are some real-world examples combining multiple operators:
+
+### Price calculations
+
+```sql
+-- Calculate total with tax
+SELECT price * 1.08 FROM products;
+
+-- Calculate discount price
+SELECT price * (1 - discount / 100) FROM products;
+
+-- Find products within budget
+SELECT * FROM products WHERE price * quantity <= 1000;
+```
+
+### Boolean logic
+
+```sql
+-- Premium users or trial users with verification
+SELECT * FROM users 
+WHERE premium == true OR (trial == true AND verified == true);
+
+-- Active users not in trial
+SELECT * FROM users 
+WHERE active == true AND NOT trial;
+
+-- Complex eligibility check
+SELECT * FROM users 
+WHERE (age >= 18 AND verified == true) OR (age >= 13 AND parent_consent == true);
+```
+
+### Mathematical expressions
+
+```sql
+-- Calculate BMI
+SELECT weight / (height * height) FROM health_records;
+
+-- Percentage calculation
+SELECT (completed / total) * 100 FROM progress;
+
+-- Compound calculations
+SELECT (base_salary + bonus) * (1 - tax_rate) FROM employees;
+```
+
+## Expression limitations
+
+<Warning>
+Databas does not support:
+- String concatenation
+- Type casting or conversion
+- NULL handling with `IS NULL` or `IS NOT NULL`
+- CASE expressions
+- BETWEEN operator
+- IN operator for membership testing
+- Pattern matching with LIKE
+- Mathematical functions (SQRT, POW, etc.)
+</Warning>
+
+## Parsing expressions
+
+The expression parser uses the Pratt parsing algorithm with operator precedence climbing. Here's how you can parse expressions programmatically:
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let expr = "2 + 3 * 4";
+let parser = Parser::new(expr);
+
+match parser.expr() {
+    Ok(expression) => println!("Parsed: {}", expression),
+    Err(error) => eprintln!("Error: {:?}", error),
+}
+```
+
+The parser builds an AST that respects operator precedence:
+
+```rust
+// "2 + 3 * 4" is parsed as:
+// BinaryOp(
+//   Literal(2),
+//   Add,
+//   BinaryOp(
+//     Literal(3),
+//     Mul,
+//     Literal(4)
+//   )
+// )
+```

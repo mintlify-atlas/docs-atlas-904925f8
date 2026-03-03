@@ -1,0 +1,130 @@
+---
+title: SQL support overview
+description: Learn about the SQL features implemented in Databas and how the parser works
+---
+
+Databas implements a subset of SQL for educational purposes. The parser is built using a hand-written recursive descent parser with Pratt parsing for expressions.
+
+## Supported statements
+
+Databas currently supports three core SQL statements:
+
+- `SELECT` - Query data from tables or evaluate expressions
+- `INSERT` - Insert rows into tables
+- `CREATE TABLE` - Define new tables with columns and constraints
+
+Each statement must end with a semicolon (`;`).
+
+## Architecture
+
+The SQL parser is organized into several modules:
+
+### Lexer
+
+The lexer (`databas_sql_parser/src/lexer/`) tokenizes SQL input into tokens. It recognizes:
+
+- Keywords (`SELECT`, `FROM`, `WHERE`, etc.)
+- Identifiers (table and column names)
+- Literals (strings, integers, floats, booleans)
+- Operators (`+`, `-`, `*`, `/`, `==`, `!=`, `<`, `>`, `<=`, `>=`)
+- Delimiters (parentheses, commas, semicolons)
+
+### Parser
+
+The parser (`databas_sql_parser/src/parser/`) builds an abstract syntax tree (AST) from tokens:
+
+- **Statement parser** - Parses top-level statements
+- **Expression parser** - Uses Pratt parsing with operator precedence
+- **Operator handling** - Manages both prefix and infix operators
+
+## Usage example
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let sql = "SELECT id, name FROM users WHERE age > 18;";
+let mut parser = Parser::new(sql);
+
+match parser.stmt() {
+    Ok(statement) => println!("Parsed: {}", statement),
+    Err(error) => eprintln!("Parse error: {:?}", error),
+}
+```
+
+## Limitations
+
+The current implementation has several intentional limitations:
+
+<Warning>
+Databas does not support:
+- JOIN operations
+- Subqueries
+- UPDATE or DELETE statements
+- Transactions
+- Indexes
+- Complex constraints (UNIQUE, FOREIGN KEY, CHECK)
+- Column aliases with AS
+- GROUP BY or HAVING clauses
+</Warning>
+
+## Parser features
+
+The parser includes several notable features:
+
+### Case-insensitive keywords
+
+SQL keywords are case-insensitive. You can write `SELECT`, `select`, or `SeLeCt`.
+
+```sql
+SELECT * FROM users;
+select * from users;
+SeLeCt * FrOm users;
+```
+
+All three queries are parsed identically.
+
+### Expression precedence
+
+The parser correctly handles operator precedence:
+
+```sql
+SELECT 2 + 3 * 4;  -- Evaluates as 2 + (3 * 4) = 14
+SELECT (2 + 3) * 4;  -- Evaluates as (2 + 3) * 4 = 20
+```
+
+### Aggregate functions
+
+You can use aggregate functions in SELECT statements:
+
+```sql
+SELECT COUNT(*), AVG(price), MAX(price) FROM products;
+```
+
+Supported aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `STDDEV`.
+
+## Error handling
+
+The parser provides detailed error messages with position information:
+
+```rust
+// Missing semicolon
+let sql = "SELECT 1";
+let mut parser = Parser::new(sql);
+// Error: ExpectedCommaOrSemicolon at position 8
+
+// Invalid column type
+let sql = "CREATE TABLE t (id INVALID_TYPE);";
+let mut parser = Parser::new(sql);
+// Error: InvalidDataType at position 25
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="SQL statements" icon="code" href="/sql/statements">
+    Learn about SELECT, INSERT, and CREATE TABLE syntax
+  </Card>
+  <Card title="Expressions" icon="function" href="/sql/expressions">
+    Explore expression syntax and operators
+  </Card>
+</CardGroup>

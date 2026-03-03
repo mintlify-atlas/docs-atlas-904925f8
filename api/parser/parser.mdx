@@ -1,0 +1,514 @@
+---
+title: Parser API
+description: SQL statement parser and AST builder
+---
+
+The parser module builds an Abstract Syntax Tree (AST) from tokens produced by the lexer. It uses Pratt parsing for expressions and supports SELECT, INSERT, and CREATE TABLE statements.
+
+## Parser
+
+The main parser struct that produces SQL statements.
+
+```rust
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+}
+```
+
+### Constructor
+
+```rust
+pub fn new(source: &'a str) -> Self
+```
+
+Creates a new parser for the given SQL source string.
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let parser = Parser::new("SELECT * FROM users;");
+```
+
+### Iterator Implementation
+
+The `Parser` implements `Iterator`, producing statements until the end of input.
+
+```rust
+impl<'a> Iterator for Parser<'a> {
+    type Item = Result<Statement<'a>, SQLError<'a>>;
+    
+    fn next(&mut self) -> Option<Self::Item>;
+}
+```
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let sql = "
+    CREATE TABLE users (id INT, name TEXT);
+    INSERT INTO users (id, name) VALUES (1, 'Alice');
+    SELECT * FROM users;
+";
+
+let parser = Parser::new(sql);
+for result in parser {
+    match result {
+        Ok(stmt) => println!("Parsed: {}", stmt),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+```
+
+### Methods
+
+#### stmt
+
+```rust
+pub fn stmt(&mut self) -> Result<Statement<'a>, SQLError<'a>>
+```
+
+Parses a single SQL statement. Returns an error if the input doesn't form a valid statement.
+
+**Example:**
+
+```rust
+let mut parser = Parser::new("SELECT id FROM users;");
+let statement = parser.stmt().unwrap();
+```
+
+#### expr
+
+```rust
+pub fn expr(mut self) -> Result<Expression<'a>, SQLError<'a>>
+```
+
+Consumes the parser and parses a single expression. Useful for parsing standalone expressions.
+
+**Example:**
+
+```rust
+let parser = Parser::new("12 + 34 * 56");
+let expr = parser.expr().unwrap();
+// Correctly parses as: 12 + (34 * 56)
+```
+
+## Statement
+
+Enumerates all supported SQL statement types.
+
+```rust
+pub enum Statement<'a> {
+    Select(SelectQuery<'a>),
+    Insert(InsertQuery<'a>),
+    CreateTable(CreateTableQuery<'a>),
+}
+```
+
+### SelectQuery
+
+Represents a SELECT statement with optional clauses.
+
+```rust
+pub struct SelectQuery<'a> {
+    pub columns: ExpressionList<'a>,
+    pub table: Option<&'a str>,
+    pub where_clause: Option<Expression<'a>>,
+    pub order_by: Option<OrderBy<'a>>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+```
+
+<ParamField path="columns" type="ExpressionList<'a>">
+  List of expressions to select
+</ParamField>
+
+<ParamField path="table" type="Option<&'a str>">
+  Table name to query from (optional)
+</ParamField>
+
+<ParamField path="where_clause" type="Option<Expression<'a>>">
+  Filter condition (optional)
+</ParamField>
+
+<ParamField path="order_by" type="Option<OrderBy<'a>>">
+  Ordering specification (optional)
+</ParamField>
+
+<ParamField path="limit" type="Option<u32>">
+  Maximum number of rows to return (optional)
+</ParamField>
+
+<ParamField path="offset" type="Option<u32>">
+  Number of rows to skip (optional)
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::stmt::Statement;
+
+let mut parser = Parser::new(
+    "SELECT id, name FROM users WHERE age > 18 ORDER BY name ASC LIMIT 10 OFFSET 5;"
+);
+
+let statement = parser.stmt().unwrap();
+if let Statement::Select(query) = statement {
+    assert_eq!(query.table, Some("users"));
+    assert!(query.where_clause.is_some());
+    assert_eq!(query.limit, Some(10));
+    assert_eq!(query.offset, Some(5));
+}
+```
+
+#### OrderBy
+
+```rust
+pub struct OrderBy<'a> {
+    pub terms: ExpressionList<'a>,
+    pub order: Option<Ordering>,
+}
+
+pub enum Ordering {
+    Ascending,
+    Descending,
+}
+```
+
+### InsertQuery
+
+Represents an INSERT statement.
+
+```rust
+pub struct InsertQuery<'a> {
+    pub table: &'a str,
+    pub columns: IdentifierList<'a>,
+    pub values: Values<'a>,
+}
+```
+
+<ParamField path="table" type="&'a str">
+  Target table name
+</ParamField>
+
+<ParamField path="columns" type="IdentifierList<'a>">
+  List of column names
+</ParamField>
+
+<ParamField path="values" type="Values<'a>">
+  List of value tuples to insert
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::stmt::Statement;
+
+let mut parser = Parser::new(
+    "INSERT INTO products (id, name, price) VALUES (1, 'Apple', 1.50), (2, 'Banana', 0.75);"
+);
+
+let statement = parser.stmt().unwrap();
+if let Statement::Insert(query) = statement {
+    assert_eq!(query.table, "products");
+    assert_eq!(query.columns.0.len(), 3);
+    assert_eq!(query.values.0.len(), 2); // Two rows
+}
+```
+
+### CreateTableQuery
+
+Represents a CREATE TABLE statement.
+
+```rust
+pub struct CreateTableQuery<'a> {
+    pub table_name: &'a str,
+    pub columns: Vec<Column<'a>>,
+}
+
+pub struct Column<'a> {
+    pub name: &'a str,
+    pub column_type: ColumnType,
+    pub constraints: Vec<ColumnConstraint>,
+}
+
+pub enum ColumnType {
+    Int,
+    Float,
+    Text,
+}
+
+pub enum ColumnConstraint {
+    PrimaryKey,
+    Nullable,
+}
+```
+
+<ParamField path="table_name" type="&'a str">
+  Name of the table to create
+</ParamField>
+
+<ParamField path="columns" type="Vec<Column<'a>>">
+  Column definitions
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::stmt::Statement;
+use databas_sql_parser::parser::stmt::create_table::{ColumnType, ColumnConstraint};
+
+let mut parser = Parser::new(
+    "CREATE TABLE users (id INT PRIMARY KEY, name TEXT, email TEXT NULLABLE);"
+);
+
+let statement = parser.stmt().unwrap();
+if let Statement::CreateTable(query) = statement {
+    assert_eq!(query.table_name, "users");
+    assert_eq!(query.columns.len(), 3);
+    
+    let id_col = &query.columns[0];
+    assert_eq!(id_col.name, "id");
+    assert!(matches!(id_col.column_type, ColumnType::Int));
+    assert!(id_col.constraints.contains(&ColumnConstraint::PrimaryKey));
+}
+```
+
+## Expression
+
+Represents SQL expressions including literals, identifiers, operators, and functions.
+
+```rust
+pub enum Expression<'a> {
+    Literal(Literal<'a>),
+    Identifier(&'a str),
+    UnaryOp((Op, Box<Expression<'a>>)),
+    BinaryOp((Box<Expression<'a>>, Op, Box<Expression<'a>>)),
+    Wildcard,
+    AggregateFunction(AggregateFunction<'a>),
+}
+```
+
+### Literal
+
+Literal values.
+
+```rust
+pub enum Literal<'a> {
+    String(&'a str),
+    Number(NumberKind),
+    Boolean(bool),
+}
+```
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::expr::{Expression, Literal};
+
+let parser = Parser::new("'hello'");
+let expr = parser.expr().unwrap();
+
+assert!(matches!(expr, Expression::Literal(Literal::String("hello"))));
+```
+
+### AggregateFunction
+
+Aggregate function calls.
+
+```rust
+pub struct AggregateFunction<'a> {
+    pub kind: AggregateFunctionKind,
+    pub expr: Box<Expression<'a>>,
+}
+
+pub enum AggregateFunctionKind {
+    Sum,
+    Count,
+    Avg,
+    StdDev,
+    Min,
+    Max,
+}
+```
+
+<ParamField path="kind" type="AggregateFunctionKind">
+  The type of aggregate function
+</ParamField>
+
+<ParamField path="expr" type="Box<Expression<'a>>">
+  The expression to aggregate
+</ParamField>
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::stmt::Statement;
+use databas_sql_parser::parser::expr::{Expression, AggregateFunction, AggregateFunctionKind};
+
+let mut parser = Parser::new("SELECT COUNT(*), SUM(price), AVG(price) FROM products;");
+
+if let Ok(Statement::Select(query)) = parser.stmt() {
+    // First column is COUNT(*)
+    if let Expression::AggregateFunction(agg) = &query.columns.0[0] {
+        assert!(matches!(agg.kind, AggregateFunctionKind::Count));
+    }
+    
+    // Second column is SUM(price)
+    if let Expression::AggregateFunction(agg) = &query.columns.0[1] {
+        assert!(matches!(agg.kind, AggregateFunctionKind::Sum));
+        assert!(matches!(*agg.expr, Expression::Identifier("price")));
+    }
+}
+```
+
+## Op
+
+Operator types with precedence rules.
+
+```rust
+pub enum Op {
+    And,
+    Or,
+    NotEquals,
+    EqualsEquals,
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
+    Not,
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+```
+
+### Operator Precedence
+
+The parser uses Pratt parsing with the following precedence levels (lower values bind less tightly):
+
+1. `AND`, `OR` (precedence 1-2)
+2. Comparison operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (precedence 3-4)
+3. Addition/Subtraction: `+`, `-` (precedence 5-6)
+4. Multiplication/Division: `*`, `/` (precedence 6-7)
+5. Unary operators: `NOT`, `-` (precedence 7)
+
+**Example:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::op::Op;
+use databas_sql_parser::parser::expr::Expression;
+
+let parser = Parser::new("12 + 34 * 56");
+let expr = parser.expr().unwrap();
+
+// Multiplication binds tighter than addition
+if let Expression::BinaryOp((left, Op::Add, right)) = expr {
+    assert!(matches!(*left, Expression::Literal(_)));
+    assert!(matches!(*right, Expression::BinaryOp((_, Op::Mul, _))));
+}
+```
+
+## Error Handling
+
+Parsing operations return detailed errors with position information:
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::error::{SQLError, SQLErrorKind};
+
+let mut parser = Parser::new("SELECT");
+match parser.stmt() {
+    Err(SQLError { kind: SQLErrorKind::ExpectedExpression, pos }) => {
+        eprintln!("Expected expression at position {}", pos);
+    }
+    _ => {}
+}
+```
+
+## Expression Parsing Examples
+
+### Arithmetic Expressions
+
+```rust
+let parser = Parser::new("(12 + 34) * 56");
+let expr = parser.expr().unwrap();
+// Parses as: (12 + 34) * 56
+```
+
+### Comparison Expressions
+
+```rust
+let parser = Parser::new("age >= 18 AND age < 65");
+let expr = parser.expr().unwrap();
+// Parses as: (age >= 18) AND (age < 65)
+```
+
+### Unary Expressions
+
+```rust
+let parser = Parser::new("NOT is_admin");
+let expr = parser.expr().unwrap();
+// Parses as: NOT (is_admin)
+
+let parser = Parser::new("-42");
+let expr = parser.expr().unwrap();
+// Parses as: -(42)
+```
+
+## Complete Examples
+
+### Parsing Multiple Statements
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let sql = "
+    CREATE TABLE products (id INT PRIMARY KEY, name TEXT, price FLOAT);
+    INSERT INTO products (id, name, price) VALUES (1, 'Widget', 19.99);
+    SELECT name, price FROM products WHERE price < 50.00;
+";
+
+let parser = Parser::new(sql);
+let statements: Vec<_> = parser.collect();
+
+assert_eq!(statements.len(), 3);
+```
+
+### Complex SELECT Query
+
+```rust
+use databas_sql_parser::parser::Parser;
+use databas_sql_parser::parser::stmt::Statement;
+
+let sql = "
+    SELECT id, name, price * 1.1 AS price_with_tax
+    FROM products
+    WHERE price > 10 AND in_stock
+    ORDER BY price DESC
+    LIMIT 20 OFFSET 10;
+";
+
+let mut parser = Parser::new(sql);
+let statement = parser.stmt().unwrap();
+
+if let Statement::Select(query) = statement {
+    assert_eq!(query.columns.0.len(), 3);
+    assert_eq!(query.table, Some("products"));
+    assert!(query.where_clause.is_some());
+    assert!(query.order_by.is_some());
+    assert_eq!(query.limit, Some(20));
+    assert_eq!(query.offset, Some(10));
+}
+```

@@ -1,0 +1,288 @@
+---
+title: DiskManager
+description: Low-level page I/O interface for database file operations
+---
+
+## Overview
+
+`DiskManager` provides the lowest-level interface to the database file, handling raw page reads and writes with checksum validation. It manages file-level operations including database initialization, page allocation, and atomic page updates.
+
+**Module:** `databas_core::disk_manager`
+
+**Visibility:** `pub(crate)` - Internal to the core crate
+
+## Structure
+
+```rust
+pub(crate) struct DiskManager {
+    file: File,
+    page_count: u64,
+}
+```
+
+<ParamField path="file" type="File">
+  The database file handle for read/write operations.
+</ParamField>
+
+<ParamField path="page_count" type="u64">
+  Number of pages currently allocated in the database file. Page IDs range from 0 to `page_count - 1`.
+</ParamField>
+
+## Methods
+
+### new
+
+Creates or opens a database file at the specified path.
+
+```rust
+pub(crate) fn new(path: &Path) -> DiskManagerResult<Self>
+```
+
+<ParamField path="path" type="&Path" required>
+  File system path to the database file. Created if it doesn't exist.
+</ParamField>
+
+<ResponseField name="Result" type="DiskManagerResult<DiskManager>">
+  Returns a new `DiskManager` instance on success.
+</ResponseField>
+
+**Behavior:**
+- If the file is empty, initializes a new database with a header page (page 0)
+- If the file exists, validates the database header including:
+  - Magic bytes: `"databas format1\0"`
+  - Page size matches `PAGE_SIZE` (4096 bytes)
+  - Page count matches file size
+  - Header page checksum
+- File size must be an exact multiple of `PAGE_SIZE`
+
+**Errors:**
+- `DiskManagerError::InvalidFileSize` - File size not a multiple of `PAGE_SIZE`
+- `DiskManagerError::InvalidPageChecksum` - Header page checksum invalid
+- `DiskManagerError::InvalidDatabaseHeader` - Header validation failed
+- `DiskManagerError::Io` - File system error
+
+**Example:**
+
+```rust
+let file = NamedTempFile::new().unwrap();
+let dm = DiskManager::new(file.path()).unwrap();
+assert_eq!(dm.page_count, 1); // Header page only
+```
+
+### new_page
+
+Allocates a new page at the end of the database file.
+
+```rust
+pub(crate) fn new_page(&mut self) -> DiskManagerResult<PageId>
+```
+
+<ResponseField name="Result" type="DiskManagerResult<PageId>">
+  Returns the page ID of the newly allocated page.
+</ResponseField>
+
+**Behavior:**
+- Extends the file by one page (4096 bytes)
+- Initializes the new page with zeroed data and a valid checksum
+- Updates the database header with the new page count
+- Returns sequential page IDs starting from 1 (page 0 is the header)
+- Newly allocated pages are immediately readable and contain only zeros
+
+**Errors:**
+- `DiskManagerError::Io` - File extension or write failed
+
+**Example:**
+
+```rust
+let mut dm = DiskManager::new(file.path()).unwrap();
+let page_id = dm.new_page().unwrap();
+assert_eq!(page_id, 1); // First data page
+
+let second_id = dm.new_page().unwrap();
+assert_eq!(second_id, 2); // Sequential allocation
+```
+
+### read_page
+
+Reads a page from disk into the provided buffer.
+
+```rust
+pub(crate) fn read_page(
+    &mut self,
+    page_id: PageId,
+    buf: &mut [u8; PAGE_SIZE],
+) -> DiskManagerResult<()>
+```
+
+<ParamField path="page_id" type="PageId" required>
+  The page identifier to read. Must be less than `page_count`.
+</ParamField>
+
+<ParamField path="buf" type="&mut [u8; PAGE_SIZE]" required>
+  Destination buffer for the page data. Must be exactly `PAGE_SIZE` (4096) bytes.
+</ParamField>
+
+<ResponseField name="Result" type="DiskManagerResult<()>">
+  Returns `Ok(())` on successful read with checksum validation.
+</ResponseField>
+
+**Behavior:**
+- Seeks to the page offset: `page_id * PAGE_SIZE`
+- Reads exactly `PAGE_SIZE` bytes into the buffer
+- Validates the page checksum (last 4 bytes)
+- Checksum covers the first 4092 bytes of the page
+
+**Errors:**
+- `DiskManagerError::InvalidPageId` - Page ID >= `page_count`
+- `DiskManagerError::InvalidPageChecksum` - Checksum validation failed
+- `DiskManagerError::Io` - Read operation failed
+
+**Example:**
+
+```rust
+let mut dm = DiskManager::new(file.path()).unwrap();
+let page_id = dm.new_page().unwrap();
+
+let mut buf = [0u8; PAGE_SIZE];
+dm.read_page(page_id, &mut buf).unwrap();
+// buf now contains the page data
+```
+
+### write_page
+
+Writes a page buffer to disk with automatic checksum generation.
+
+```rust
+pub(crate) fn write_page(
+    &mut self,
+    page_id: PageId,
+    buf: &[u8; PAGE_SIZE],
+) -> DiskManagerResult<()>
+```
+
+<ParamField path="page_id" type="PageId" required>
+  The page identifier to write. Must be less than `page_count`.
+</ParamField>
+
+<ParamField path="buf" type="&[u8; PAGE_SIZE]" required>
+  Source buffer containing page data. The trailing 4 bytes are overwritten with a new checksum.
+</ParamField>
+
+<ResponseField name="Result" type="DiskManagerResult<()>">
+  Returns `Ok(())` on successful write and sync.
+</ResponseField>
+
+**Behavior:**
+- Computes CRC32 checksum over the first 4092 bytes
+- Writes the checksum to the last 4 bytes of a copy of the buffer
+- Seeks to the page offset: `page_id * PAGE_SIZE`
+- Writes exactly `PAGE_SIZE` bytes to disk
+- Calls `sync_all()` to ensure durability (fsync)
+
+**Errors:**
+- `DiskManagerError::InvalidPageId` - Page ID >= `page_count`
+- `DiskManagerError::Io` - Write or sync operation failed
+
+**Example:**
+
+```rust
+let mut dm = DiskManager::new(file.path()).unwrap();
+let page_id = dm.new_page().unwrap();
+
+let mut write_buf = [0u8; PAGE_SIZE];
+write_buf[0] = 42;
+dm.write_page(page_id, &write_buf).unwrap();
+
+// Read back to verify
+let mut read_buf = [0u8; PAGE_SIZE];
+dm.read_page(page_id, &mut read_buf).unwrap();
+assert_eq!(read_buf[0], 42);
+```
+
+## Error Types
+
+### DiskManagerError
+
+```rust
+pub(crate) enum DiskManagerError {
+    Io(std::io::Error),
+    InvalidPageId { page_id: u64 },
+    InvalidFileSize { size: u64 },
+    InvalidPageChecksum { page_id: u64 },
+    InvalidDatabaseHeader(DatabaseHeaderError),
+}
+```
+
+<ParamField path="Io" type="std::io::Error">
+  File system I/O error during read, write, seek, or sync operations.
+</ParamField>
+
+<ParamField path="InvalidPageId" type="{ page_id: u64 }">
+  Attempted to access a page ID that doesn't exist. Valid range is `0..page_count`.
+</ParamField>
+
+<ParamField path="InvalidFileSize" type="{ size: u64 }">
+  Database file size is not a multiple of `PAGE_SIZE` (4096 bytes).
+</ParamField>
+
+<ParamField path="InvalidPageChecksum" type="{ page_id: u64 }">
+  CRC32 checksum validation failed when reading a page, indicating corruption.
+</ParamField>
+
+<ParamField path="InvalidDatabaseHeader" type="DatabaseHeaderError">
+  Database header validation failed. See `DatabaseHeader` documentation for details.
+</ParamField>
+
+### DiskManagerResult
+
+```rust
+pub(crate) type DiskManagerResult<T> = Result<T, DiskManagerError>;
+```
+
+## Constants
+
+<ParamField path="PAGE_SIZE" type="usize">
+  Fixed page size of 4096 bytes. All database files are organized in these fixed-size pages.
+</ParamField>
+
+<ParamField path="HEADER_PAGE_ID" type="PageId">
+  The header page is always page 0. Contains database metadata including magic bytes, page size, and page count.
+</ParamField>
+
+<ParamField path="FIRST_DATA_PAGE_ID" type="PageId">
+  First data page is always page 1. Pages 1 and above are available for table data.
+</ParamField>
+
+## Implementation Notes
+
+### Page Allocation
+
+- Page IDs are allocated sequentially starting from 1
+- Page 0 is reserved for the database header
+- `page_count` tracks the total number of pages including the header
+- Valid page IDs are in the range `[0, page_count)`
+
+### Checksums
+
+- Uses CRC32 algorithm via the `crc32-v2` crate
+- Checksum covers bytes `[0, 4092)` of each page
+- Checksum is stored in bytes `[4092, 4096)` as little-endian `u32`
+- Automatically computed on writes, validated on reads
+
+### Durability
+
+- Every write calls `File::sync_all()` to ensure fsync
+- Header page is updated synchronously when allocating new pages
+- Database is always in a consistent state after successful operations
+
+### Thread Safety
+
+- `DiskManager` is not `Send` or `Sync` by default (contains `File`)
+- Expected to be used within a single-threaded context or protected by locks
+- Multiple readers are not supported; use `PageCache` for concurrent access
+
+## Related Types
+
+- **DatabaseHeader** - Manages the header page format and validation
+- **PageCache** - Higher-level caching layer built on top of `DiskManager`
+- **PageId** - Type alias for `u64`, represents a page identifier

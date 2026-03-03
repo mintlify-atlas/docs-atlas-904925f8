@@ -1,0 +1,164 @@
+---
+title: CLI Usage
+description: Learn how to use the Databas command-line interface for interactive and non-interactive query execution
+---
+
+The Databas CLI provides both an interactive REPL (Read-Eval-Print Loop) and a single-query execution mode for testing and exploring SQL queries.
+
+## Installation
+
+Build the CLI from the workspace root:
+
+```bash
+cargo build --package databas_cli
+```
+
+The binary will be available at `target/debug/databas_cli`.
+
+## Usage Modes
+
+The CLI supports two modes of operation:
+
+### Interactive REPL Mode
+
+Launch the REPL by running the CLI without arguments:
+
+```bash
+./target/debug/databas_cli
+```
+
+You'll see the interactive prompt:
+
+```bash
+>>>
+```
+
+<Steps>
+  <Step title="Start the REPL">
+    Run the CLI without arguments to enter interactive mode:
+    
+    ```bash
+    ./target/debug/databas_cli
+    ```
+  </Step>
+  
+  <Step title="Enter SQL queries">
+    Type your SQL queries at the prompt and press Enter:
+    
+    ```sql
+    >>> SELECT * FROM users WHERE id = 1
+    ```
+  </Step>
+  
+  <Step title="Exit the REPL">
+    Type `exit` to quit the interactive session:
+    
+    ```bash
+    >>> exit
+    ```
+  </Step>
+</Steps>
+
+### Single-Query Mode
+
+Execute a single query by passing it as a command-line argument:
+
+```bash
+./target/debug/databas_cli "SELECT * FROM users"
+```
+
+This mode is useful for scripting or quick one-off queries.
+
+## Example Sessions
+
+### Basic Query Execution
+
+```bash
+$ ./target/debug/databas_cli
+>>> SELECT name, email FROM users WHERE age > 18
+'SELECT name, email FROM users WHERE age > 18'
+
+>>>
+```
+
+The CLI parses your query and displays the parsed result. Each successfully parsed statement is echoed back in quotes.
+
+### Multiple Statements
+
+You can execute queries with multiple statements:
+
+```bash
+>>> CREATE TABLE users (id INTEGER, name TEXT); INSERT INTO users VALUES (1, 'Alice')
+'CREATE TABLE users (id INTEGER, name TEXT)'
+'INSERT INTO users VALUES (1, 'Alice')'
+
+>>>
+```
+
+### Error Handling
+
+If a query contains syntax errors, the CLI displays an error message:
+
+```bash
+>>> SELECT * FORM users
+ERROR: expected FROM, got FORM
+>>>
+```
+
+The error is displayed on stderr, and the REPL continues running, allowing you to correct and retry your query.
+
+### Exiting the CLI
+
+To exit the interactive REPL, type the `exit` command:
+
+```bash
+>>> exit
+$
+```
+
+## Command Reference
+
+### Interactive Commands
+
+| Command | Description |
+|---------|-------------|
+| `exit` | Exit the interactive REPL session |
+| Any SQL query | Parse and display the query structure |
+
+### Command-Line Arguments
+
+```bash
+databas_cli [QUERY]
+```
+
+**Arguments:**
+- `QUERY` (optional): SQL query to execute in single-query mode. If omitted, launches the interactive REPL.
+
+## How It Works
+
+The CLI uses the `databas_sql_parser` crate to parse SQL queries. The parsing process:
+
+1. Reads input from stdin (REPL mode) or command-line argument (single-query mode)
+2. Passes the query to the SQL parser
+3. Iterates through parsed statements
+4. Displays each successfully parsed statement or shows parsing errors
+
+The current implementation focuses on parsing and validation. Query execution will be added as the database engine matures.
+
+## Tips
+
+- Press Ctrl+C to force-quit the REPL if needed
+- The CLI outputs to stdout for successful parses and stderr for errors
+- Quote your queries in single-query mode to preserve spacing and special characters
+- Each query in the REPL is independent—there's no persistent state between queries yet
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SQL Parser" icon="code" href="/api/parser/overview">
+    Learn about the SQL parsing engine
+  </Card>
+  <Card title="Core Database" icon="database" href="/api/core/disk-manager">
+    Explore the database engine internals
+  </Card>
+</CardGroup>

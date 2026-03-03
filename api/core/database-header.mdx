@@ -1,0 +1,312 @@
+---
+title: DatabaseHeader
+description: Database file header format and validation
+---
+
+## Overview
+
+`DatabaseHeader` manages the format, serialization, and validation of the database file header stored on page 0. The header contains critical metadata including magic bytes for format identification, page size, and total page count.
+
+**Module:** `databas_core::database_header`
+
+**Visibility:** `pub(crate)` - Internal to the core crate
+
+## Structure
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DatabaseHeader {
+    pub(crate) page_size: u16,
+    pub(crate) page_count: u64,
+}
+```
+
+<ParamField path="page_size" type="u16">
+  Size of each page in bytes. Always `4096` for this implementation.
+</ParamField>
+
+<ParamField path="page_count" type="u64">
+  Total number of pages in the database file, including the header page. Minimum value is 1.
+</ParamField>
+
+## Header Layout
+
+The header is stored in page 0 with the following binary layout:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 16 | Magic | Format identifier: `"databas format1\0"` |
+| 16 | 2 | Page Size | Page size in bytes (little-endian `u16`) |
+| 18 | 8 | Page Count | Total pages in file (little-endian `u64`) |
+| 26 | 4066 | Reserved | Unused, filled with zeros |
+| 4092 | 4 | Checksum | CRC32 of bytes [0, 4092) |
+
+## Methods
+
+### new
+
+Creates a new header with the given page count.
+
+```rust
+pub(crate) fn new(page_count: u64) -> Self
+```
+
+<ParamField path="page_count" type="u64" required>
+  Total number of pages in the database. Must be at least 1.
+</ParamField>
+
+<ResponseField name="Result" type="DatabaseHeader">
+  Returns a new `DatabaseHeader` with `page_size` set to `PAGE_SIZE` (4096).
+</ResponseField>
+
+**Example:**
+
+```rust
+let header = DatabaseHeader::new(10);
+assert_eq!(header.page_size, 4096);
+assert_eq!(header.page_count, 10);
+```
+
+### init_new
+
+Initializes a header page buffer for a new database.
+
+```rust
+pub(crate) fn init_new(page: &mut [u8; PAGE_SIZE])
+```
+
+<ParamField path="page" type="&mut [u8; PAGE_SIZE]" required>
+  Page buffer to initialize with a new database header.
+</ParamField>
+
+**Behavior:**
+- Creates a header with `page_count = 1` (header page only)
+- Writes the header to the page buffer using `write()`
+- Used when creating new database files
+
+**Example:**
+
+```rust
+let mut page = [0u8; PAGE_SIZE];
+DatabaseHeader::init_new(&mut page);
+
+// Page now contains a valid header for a new database
+let header = DatabaseHeader::read(&page).unwrap();
+assert_eq!(header.page_count, 1);
+```
+
+### read
+
+Deserializes and validates a header from a page buffer.
+
+```rust
+pub(crate) fn read(page: &[u8; PAGE_SIZE]) -> Result<Self, DatabaseHeaderError>
+```
+
+<ParamField path="page" type="&[u8; PAGE_SIZE]" required>
+  Page buffer containing the database header (page 0).
+</ParamField>
+
+<ResponseField name="Result" type="Result<DatabaseHeader, DatabaseHeaderError>">
+  Returns the parsed header on success.
+</ResponseField>
+
+**Validation:**
+- Magic bytes must match `"databas format1\0"` exactly
+- Page size must equal `PAGE_SIZE` (4096)
+- Does not validate checksum (caller's responsibility)
+
+**Errors:**
+- `DatabaseHeaderError::InvalidMagic` - Magic bytes don't match expected value
+- `DatabaseHeaderError::InvalidPageSize` - Page size doesn't match `PAGE_SIZE`
+
+**Example:**
+
+```rust
+let mut page = [0u8; PAGE_SIZE];
+DatabaseHeader::init_new(&mut page);
+
+let header = DatabaseHeader::read(&page).unwrap();
+assert_eq!(header.page_size, 4096);
+assert_eq!(header.page_count, 1);
+```
+
+### write
+
+Serializes the header to a page buffer with checksum.
+
+```rust
+pub(crate) fn write(&self, page: &mut [u8; PAGE_SIZE])
+```
+
+<ParamField path="page" type="&mut [u8; PAGE_SIZE]" required>
+  Destination page buffer. Will be completely overwritten.
+</ParamField>
+
+**Behavior:**
+- Clears the entire page to zeros
+- Writes magic bytes, page size, and page count
+- Computes and writes CRC32 checksum in the last 4 bytes
+- Page is ready to be written to disk
+
+**Example:**
+
+```rust
+let header = DatabaseHeader::new(5);
+let mut page = [0u8; PAGE_SIZE];
+header.write(&mut page);
+
+// Verify round-trip
+let read_header = DatabaseHeader::read(&page).unwrap();
+assert_eq!(header, read_header);
+```
+
+### validate
+
+Validates the header against the actual file page count.
+
+```rust
+pub(crate) fn validate(&self, actual_page_count: u64) -> Result<(), DatabaseHeaderError>
+```
+
+<ParamField path="actual_page_count" type="u64" required>
+  The actual number of pages in the file, computed from file size.
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), DatabaseHeaderError>">
+  Returns `Ok(())` if validation passes.
+</ResponseField>
+
+**Validation:**
+- Header `page_count` must not be zero
+- Header `page_count` must match `actual_page_count`
+
+**Errors:**
+- `DatabaseHeaderError::PageCountZero` - Header page count is 0
+- `DatabaseHeaderError::PageCountMismatch` - Mismatch between header and file size
+
+**Example:**
+
+```rust
+let header = DatabaseHeader::new(3);
+let file_page_count = 3u64;
+
+// Valid: counts match
+header.validate(file_page_count).unwrap();
+
+// Invalid: counts don't match
+let result = header.validate(5);
+assert!(result.is_err());
+```
+
+## Error Types
+
+### DatabaseHeaderError
+
+```rust
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DatabaseHeaderError {
+    InvalidMagic,
+    InvalidPageSize { actual: u16, expected: usize },
+    PageCountZero,
+    PageCountMismatch { actual: u64, expected: u64 },
+}
+```
+
+<ParamField path="InvalidMagic">
+  The magic bytes don't match `"databas format1\0"`. Indicates an invalid or corrupted database file.
+</ParamField>
+
+<ParamField path="InvalidPageSize" type="{ actual: u16, expected: usize }">
+  The page size in the header doesn't match the expected `PAGE_SIZE` (4096). Database cannot be opened.
+</ParamField>
+
+<ParamField path="PageCountZero">
+  The header declares zero pages, which is invalid. Every database must have at least the header page.
+</ParamField>
+
+<ParamField path="PageCountMismatch" type="{ actual: u64, expected: u64 }">
+  The page count in the header doesn't match the file size. Indicates truncation or corruption.
+  - `actual` is the page count from the header
+  - `expected` is the page count computed from file size
+</ParamField>
+
+## Constants
+
+<ParamField path="HEADER_PAGE_ID" type="PageId">
+  The header is always stored on page 0.
+  
+  ```rust
+  pub(crate) const HEADER_PAGE_ID: PageId = 0;
+  ```
+</ParamField>
+
+<ParamField path="FIRST_DATA_PAGE_ID" type="PageId">
+  First data page starts at page 1. Page 0 is reserved for the header.
+  
+  ```rust
+  pub(crate) const FIRST_DATA_PAGE_ID: PageId = 1;
+  ```
+</ParamField>
+
+<ParamField path="DATABASE_MAGIC" type="[u8; 16]">
+  Magic byte sequence identifying the database format.
+  
+  ```rust
+  const DATABASE_MAGIC: [u8; 16] = *b"databas format1\0";
+  ```
+</ParamField>
+
+## Implementation Notes
+
+### Magic Bytes
+
+The magic byte sequence `"databas format1\0"` serves as:
+- Format identifier for the Databas system
+- Version indicator ("format1" is the current version)
+- Quick validation that a file is a Databas database
+
+### Page Count Semantics
+
+- Includes the header page (page 0) in the count
+- Minimum valid value is 1 (header only)
+- Matches the file size: `file_size = page_count * PAGE_SIZE`
+- Updated atomically when pages are allocated via `DiskManager::new_page()`
+
+### Serialization Format
+
+- All multi-byte integers are little-endian
+- Page size is `u16` to save space (max 65535 bytes)
+- Page count is `u64` to support large databases (up to 16 exabytes)
+- Reserved space (4066 bytes) allows for future header extensions
+
+### Checksum
+
+- The header page has a checksum like all other pages
+- Checksum is computed and validated by the `page_checksum` module
+- `DiskManager` validates the header checksum during `new()`
+
+## Usage Example
+
+Typical usage when opening a database:
+
+```rust
+use databas_core::disk_manager::DiskManager;
+
+// DiskManager handles header validation automatically
+let dm = DiskManager::new(path)?;
+
+// To read the header explicitly:
+let mut header_page = [0u8; PAGE_SIZE];
+dm.read_page(HEADER_PAGE_ID, &mut header_page)?;
+let header = DatabaseHeader::read(&header_page)?;
+header.validate(dm.page_count)?;
+
+println!("Database has {} pages", header.page_count);
+```
+
+## Related Types
+
+- **DiskManager** - Uses `DatabaseHeader` to initialize and validate database files
+- **PageId** - Type alias for `u64`, used for page identifiers
+- **PAGE_SIZE** - Constant defining the fixed page size (4096 bytes)

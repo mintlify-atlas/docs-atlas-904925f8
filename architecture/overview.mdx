@@ -1,0 +1,145 @@
+---
+title: Architecture overview
+description: High-level overview of Databas' layered architecture and core components
+---
+
+Databas is a SQLite-like database system implemented in Rust. The architecture follows a layered design where each component has clear responsibilities and boundaries.
+
+## System layers
+
+The database is organized into distinct layers that build upon each other:
+
+```
+┌─────────────────────────────┐
+│      SQL Interface          │  ← Query parsing and execution
+├─────────────────────────────┤
+│      B-tree Layer           │  ← Table operations and indexing
+├─────────────────────────────┤
+│      Page Cache             │  ← In-memory page management
+├─────────────────────────────┤
+│      Disk Manager           │  ← File I/O and page persistence
+└─────────────────────────────┘
+```
+
+### Disk manager
+
+The `DiskManager` (disk_manager.rs:14) provides the lowest-level interface for reading and writing fixed-size pages to disk. It handles:
+
+- Database file initialization and validation
+- Page allocation with sequential page IDs
+- Atomic page reads and writes
+- Page checksum verification
+
+```rust
+pub(crate) struct DiskManager {
+    file: File,
+    page_count: u64,
+}
+```
+
+Every database file starts with a header page at page ID 0, and data pages begin at page ID 1.
+
+### Page cache
+
+The `PageCache` (page_cache.rs:26) implements a buffer pool using the CLOCK second-chance replacement algorithm:
+
+```rust
+pub(crate) struct PageCache {
+    disk_manager: DiskManager,
+    frames: Vec<Frame>,
+    page_table: HashMap<PageId, FrameId>,
+    clock_hand: FrameId,
+}
+```
+
+Key features:
+
+- **Pin guards**: Pages are pinned in memory while in use via RAII `PinGuard` handles
+- **Dirty tracking**: Modified pages are automatically marked dirty and written back on eviction
+- **CLOCK eviction**: Referenced frames get a second chance before eviction
+- **Automatic flushing**: Dirty pages are flushed when the cache is dropped
+
+### Table pages
+
+Databas uses a B-tree structure with two page types:
+
+<Tabs>
+  <Tab title="Leaf pages">
+    Leaf pages store actual row data. Each cell contains:
+    
+    - 2-byte payload length
+    - 8-byte row ID (primary key)
+    - Variable-length payload bytes
+    
+    Cells are stored in the cell-content region at the end of the page, while the slot directory grows from the beginning.
+  </Tab>
+  
+  <Tab title="Interior pages">
+    Interior pages store separator keys for navigation. Each cell contains:
+    
+    - 8-byte left child page ID
+    - 8-byte separator row ID
+    
+    The page header also stores an 8-byte rightmost child pointer for keys greater than all separators.
+  </Tab>
+</Tabs>
+
+Both page types use the same slotted page layout with growing slot directories.
+
+## Core constants
+
+Databas uses fixed-size pages throughout the system:
+
+```rust
+// types.rs:1
+pub(crate) const PAGE_SIZE: usize = 4096;
+
+pub(crate) type PageId = u64;
+pub(crate) type RowId = u64;
+```
+
+Each page reserves 4 bytes at the end for a CRC32 checksum (page_checksum.rs:3-4):
+
+```rust
+pub(crate) const PAGE_CHECKSUM_SIZE: usize = 4;
+pub(crate) const PAGE_DATA_END: usize = PAGE_SIZE - PAGE_CHECKSUM_SIZE;
+```
+
+This means only 4092 bytes per page are available for data and metadata.
+
+## Data flow
+
+A typical read operation flows through all layers:
+
+1. **B-tree navigation**: Start at root page, traverse interior pages using separator keys
+2. **Cache lookup**: Check if page is resident in buffer pool
+3. **Cache miss**: Allocate frame using CLOCK, evict victim if needed
+4. **Disk read**: Read page from file at calculated offset
+5. **Checksum validation**: Verify page integrity before use
+6. **Pin page**: Increment pin count and return guard
+
+Write operations follow a similar path but mark pages dirty and defer writes until eviction or explicit flush.
+
+<Note>
+  All pages are checksummed using CRC32 to detect corruption. The `DiskManager` validates checksums on every read and recalculates them on every write.
+</Note>
+
+## Crate structure
+
+Databas is organized into multiple crates:
+
+- **databas_core**: Page management, disk I/O, B-tree implementation
+- **databas_sql_parser**: SQL lexer and parser
+- **databas_cli**: Command-line interface
+
+The `databas_core` crate contains all architecture components described in this section.
+
+## Error handling
+
+Each layer defines its own error types using `thiserror`:
+
+- `DiskManagerError`: I/O errors, invalid page IDs, checksum failures
+- `PageCacheError`: No evictable frames, pinned pages
+- `TablePageError`: Corrupt pages, duplicate keys, page full
+
+Errors propagate up the stack using Rust's `Result` type, allowing higher layers to handle or transform them appropriately.

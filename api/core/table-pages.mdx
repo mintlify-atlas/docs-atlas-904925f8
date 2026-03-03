@@ -1,0 +1,724 @@
+---
+title: Table Page APIs
+description: B-tree page structures for leaf and interior nodes
+---
+
+## Overview
+
+Table pages implement the node structures for Databas's B-tree storage. They come in two flavors: **leaf pages** store actual row data, while **interior pages** store separator keys and child pointers for tree navigation.
+
+**Module:** `databas_core::table_page`
+
+**Visibility:** `pub(crate)` - Internal to the core crate
+
+## Page Types
+
+Both page types use a common slotted-page layout:
+
+```
+┌─────────────────────┬─────────────────┬──────────────────┐
+│ Fixed Header        │ Slot Directory  │ Cell Data        │
+│ (8 or 16 bytes)     │ (grows →)       │ (← grows)        │
+└─────────────────────┴─────────────────┴──────────────────┘
+```
+
+- **Leaf pages:** Type ID = 1, Header size = 8 bytes
+- **Interior pages:** Type ID = 2, Header size = 16 bytes
+
+### Common Header (bytes 0-6)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Page Type | 1 = leaf, 2 = interior |
+| 1 | 1 | Reserved | Unused |
+| 2 | 2 | Cell Count | Number of cells (little-endian u16) |
+| 4 | 2 | Content Start | Offset where cell data begins |
+| 6 | 2 | Reserved | Unused in leaf pages |
+
+### Interior Page Header (bytes 8-15)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 8 | 8 | Rightmost Child | Page ID of rightmost child (little-endian u64) |
+
+---
+
+## Leaf Pages
+
+Leaf pages store table rows keyed by row ID.
+
+### Structures
+
+#### TableLeafPageRef
+
+Immutable view of a leaf page.
+
+```rust
+pub(crate) struct TableLeafPageRef<'a> {
+    page: &'a [u8; PAGE_SIZE],
+}
+```
+
+#### TableLeafPageMut
+
+Mutable view of a leaf page.
+
+```rust
+pub(crate) struct TableLeafPageMut<'a> {
+    page: &'a mut [u8; PAGE_SIZE],
+}
+```
+
+#### LeafCellRef
+
+Borrowed view of one decoded leaf cell.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LeafCellRef<'a> {
+    pub(crate) row_id: RowId,
+    pub(crate) payload: &'a [u8],
+}
+```
+
+<ParamField path="row_id" type="RowId">
+  The row identifier (u64) used as the sorting key.
+</ParamField>
+
+<ParamField path="payload" type="&[u8]">
+  Borrowed slice of the row's payload bytes. Maximum size is 65,535 bytes.
+</ParamField>
+
+### Leaf Cell Format
+
+```
+┌────────────────┬────────────────┬─────────────────┐
+│ Payload Length │ Row ID         │ Payload Bytes   │
+│ (u16 LE)       │ (u64 LE)       │ (variable)      │
+└────────────────┴────────────────┴─────────────────┘
+  2 bytes          8 bytes          N bytes
+```
+
+Total cell size: `10 + payload_length` bytes
+
+### Leaf Page Methods
+
+#### init_empty
+
+Initializes an empty leaf page.
+
+```rust
+pub(crate) fn init_empty(page: &'a mut [u8; PAGE_SIZE]) -> TablePageResult<Self>
+```
+
+<ParamField path="page" type="&mut [u8; PAGE_SIZE]" required>
+  Page buffer to initialize.
+</ParamField>
+
+**Example:**
+
+```rust
+let mut page = [0u8; PAGE_SIZE];
+let leaf = TableLeafPageMut::init_empty(&mut page).unwrap();
+assert_eq!(leaf.cell_count(), 0);
+```
+
+#### from_bytes
+
+Wraps an existing page buffer with validation.
+
+```rust
+pub(crate) fn from_bytes(page: &'a [u8; PAGE_SIZE]) -> TablePageResult<Self>
+```
+
+**Validation:**
+- Page type byte must be 1 (leaf)
+- Cell count and content start must be consistent
+- Slot directory must not overlap cell content region
+
+**Errors:**
+- `TablePageError::InvalidPageType` - Wrong page type
+- `TablePageError::CorruptPage` - Header validation failed
+
+#### search
+
+Looks up a cell by row ID.
+
+```rust
+pub(crate) fn search(&self, row_id: RowId) -> TablePageResult<Option<LeafCellRef<'_>>>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  The row identifier to search for.
+</ParamField>
+
+<ResponseField name="Result" type="TablePageResult<Option<LeafCellRef>>">
+  Returns `Ok(Some(cell))` if found, `Ok(None)` if not found.
+</ResponseField>
+
+**Behavior:**
+- Binary search over sorted slot directory
+- O(log n) time complexity
+- Returns borrowed payload slice (zero-copy)
+
+**Example:**
+
+```rust
+let leaf = TableLeafPageRef::from_bytes(&page).unwrap();
+if let Some(cell) = leaf.search(42).unwrap() {
+    println!("Row 42: {} bytes", cell.payload.len());
+}
+```
+
+#### insert
+
+Inserts a new row with the given row ID and payload.
+
+```rust
+pub(crate) fn insert(&mut self, row_id: RowId, payload: &[u8]) -> TablePageResult<()>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  The row identifier. Must be unique within the page.
+</ParamField>
+
+<ParamField path="payload" type="&[u8]" required>
+  Row payload bytes. Maximum size is 65,535 bytes.
+</ParamField>
+
+**Behavior:**
+- Maintains sorted order by row ID
+- Automatically defragments once if space is fragmented
+- Inserts slot entry and cell content
+
+**Errors:**
+- `TablePageError::DuplicateRowId` - Row ID already exists
+- `TablePageError::CellTooLarge` - Payload exceeds 65,535 bytes
+- `TablePageError::PageFull` - Insufficient space even after defragmentation
+
+**Example:**
+
+```rust
+let mut leaf = TableLeafPageMut::from_bytes(&mut page).unwrap();
+leaf.insert(100, b"hello world").unwrap();
+assert!(leaf.search(100).unwrap().is_some());
+```
+
+#### update
+
+Replaces the payload for an existing row ID.
+
+```rust
+pub(crate) fn update(&mut self, row_id: RowId, payload: &[u8]) -> TablePageResult<()>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  The row identifier. Must exist on the page.
+</ParamField>
+
+<ParamField path="payload" type="&[u8]" required>
+  New payload bytes.
+</ParamField>
+
+**Behavior:**
+- If new payload is the same size, updates in-place (no defragmentation)
+- If size differs, allocates new cell and marks old as dead space
+- Automatically defragments once if needed
+
+**Errors:**
+- `TablePageError::RowIdNotFound` - Row ID doesn't exist
+- `TablePageError::CellTooLarge` - New payload too large
+- `TablePageError::PageFull` - Insufficient space for larger payload
+
+**Example:**
+
+```rust
+leaf.insert(50, b"old").unwrap();
+leaf.update(50, b"new payload").unwrap();
+assert_eq!(leaf.search(50).unwrap().unwrap().payload, b"new payload");
+```
+
+#### delete
+
+Deletes the cell for the given row ID.
+
+```rust
+pub(crate) fn delete(&mut self, row_id: RowId) -> TablePageResult<()>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  The row identifier to delete.
+</ParamField>
+
+**Behavior:**
+- Removes slot entry
+- Leaves cell content as dead space (not reclaimed until defragmentation)
+- O(n) to shift remaining slots
+
+**Errors:**
+- `TablePageError::RowIdNotFound` - Row ID doesn't exist
+
+**Example:**
+
+```rust
+leaf.insert(25, b"data").unwrap();
+leaf.delete(25).unwrap();
+assert!(leaf.search(25).unwrap().is_none());
+```
+
+#### defragment
+
+Compacts live cells and reclaims dead space.
+
+```rust
+pub(crate) fn defragment(&mut self) -> TablePageResult<()>
+```
+
+**Behavior:**
+- Copies live cells contiguously toward page end
+- Rebuilds slot directory with updated offsets
+- Reclaims space from deleted or updated cells
+
+**Example:**
+
+```rust
+leaf.insert(1, &[0u8; 1000]).unwrap();
+leaf.insert(2, &[0u8; 1000]).unwrap();
+leaf.delete(1).unwrap();
+
+let free_before = leaf.free_space().unwrap();
+leaf.defragment().unwrap();
+let free_after = leaf.free_space().unwrap();
+assert!(free_after > free_before); // Reclaimed space
+```
+
+#### cell_count
+
+Returns the number of cells currently stored.
+
+```rust
+pub(crate) fn cell_count(&self) -> u16
+```
+
+#### free_space
+
+Returns available bytes between slot directory and cell content.
+
+```rust
+pub(crate) fn free_space(&self) -> TablePageResult<usize>
+```
+
+**Note:** Does not include dead space from deleted cells. Call `defragment()` to reclaim.
+
+---
+
+## Interior Pages
+
+Interior pages implement B-tree internal nodes with separator keys.
+
+### Structures
+
+#### TableInteriorPageRef
+
+Immutable view of an interior page.
+
+```rust
+pub(crate) struct TableInteriorPageRef<'a> {
+    page: &'a [u8; PAGE_SIZE],
+}
+```
+
+#### TableInteriorPageMut
+
+Mutable view of an interior page.
+
+```rust
+pub(crate) struct TableInteriorPageMut<'a> {
+    page: &'a mut [u8; PAGE_SIZE],
+}
+```
+
+#### InteriorCell
+
+Decoded interior cell mapping a separator key to a child pointer.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InteriorCell {
+    pub(crate) left_child: PageId,
+    pub(crate) row_id: RowId,
+}
+```
+
+<ParamField path="left_child" type="PageId">
+  Page ID of the child page containing keys less than `row_id`.
+</ParamField>
+
+<ParamField path="row_id" type="RowId">
+  Separator key. Keys in `left_child` are `< row_id`.
+</ParamField>
+
+### Interior Cell Format
+
+```
+┌────────────────┬────────────────┐
+│ Left Child     │ Row ID         │
+│ (u64 LE)       │ (u64 LE)       │
+└────────────────┴────────────────┘
+  8 bytes          8 bytes
+```
+
+Fixed cell size: 16 bytes
+
+### Rightmost Child
+
+Interior pages have a special rightmost child pointer in the header (bytes 8-15) for keys greater than all separators.
+
+### Interior Page Methods
+
+#### init_empty
+
+Initializes an empty interior page.
+
+```rust
+pub(crate) fn init_empty(
+    page: &'a mut [u8; PAGE_SIZE],
+    rightmost_child: PageId,
+) -> TablePageResult<Self>
+```
+
+<ParamField path="page" type="&mut [u8; PAGE_SIZE]" required>
+  Page buffer to initialize.
+</ParamField>
+
+<ParamField path="rightmost_child" type="PageId" required>
+  Page ID for keys greater than all separators.
+</ParamField>
+
+**Example:**
+
+```rust
+let mut page = [0u8; PAGE_SIZE];
+let interior = TableInteriorPageMut::init_empty(&mut page, 99).unwrap();
+assert_eq!(interior.rightmost_child(), 99);
+```
+
+#### from_bytes
+
+Wraps an existing interior page with validation.
+
+```rust
+pub(crate) fn from_bytes(page: &'a [u8; PAGE_SIZE]) -> TablePageResult<Self>
+```
+
+**Validation:**
+- Page type byte must be 2 (interior)
+- Header layout must be valid
+
+**Errors:**
+- `TablePageError::InvalidPageType` - Wrong page type
+- `TablePageError::CorruptPage` - Validation failed
+
+#### search
+
+Looks up a separator cell by row ID.
+
+```rust
+pub(crate) fn search(&self, row_id: RowId) -> TablePageResult<Option<InteriorCell>>
+```
+
+**Returns:** `Some(cell)` if an exact match exists, `None` otherwise.
+
+**Example:**
+
+```rust
+let interior = TableInteriorPageRef::from_bytes(&page).unwrap();
+if let Some(cell) = interior.search(50).unwrap() {
+    println!("Separator 50 -> child page {}", cell.left_child);
+}
+```
+
+#### child_for_row_id
+
+Returns the child page ID to descend into for a given row ID.
+
+```rust
+pub(crate) fn child_for_row_id(&self, row_id: RowId) -> TablePageResult<PageId>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  The row ID to route.
+</ParamField>
+
+<ResponseField name="Result" type="TablePageResult<PageId>">
+  Returns the child page ID that may contain `row_id`.
+</ResponseField>
+
+**Routing logic:**
+- Find the first separator `>= row_id`
+- If found, return its `left_child`
+- Otherwise, return `rightmost_child`
+
+**Example:**
+
+```rust
+// Interior page with separators: [10 -> pg1, 20 -> pg2], rightmost = pg3
+let interior = TableInteriorPageRef::from_bytes(&page).unwrap();
+
+assert_eq!(interior.child_for_row_id(5).unwrap(), pg1);   // < 10
+assert_eq!(interior.child_for_row_id(10).unwrap(), pg1);  // = 10
+assert_eq!(interior.child_for_row_id(15).unwrap(), pg2);  // 10 < x < 20
+assert_eq!(interior.child_for_row_id(25).unwrap(), pg3);  // > 20
+```
+
+#### insert
+
+Inserts a new separator cell.
+
+```rust
+pub(crate) fn insert(&mut self, row_id: RowId, left_child: PageId) -> TablePageResult<()>
+```
+
+<ParamField path="row_id" type="RowId" required>
+  Separator key. Must be unique.
+</ParamField>
+
+<ParamField path="left_child" type="PageId" required>
+  Child page for keys `< row_id`.
+</ParamField>
+
+**Errors:**
+- `TablePageError::DuplicateRowId` - Separator already exists
+- `TablePageError::PageFull` - No space for new cell
+
+**Example:**
+
+```rust
+let mut interior = TableInteriorPageMut::from_bytes(&mut page).unwrap();
+interior.insert(100, 5).unwrap(); // Keys < 100 are in page 5
+```
+
+#### update
+
+Replaces the left child pointer for an existing separator.
+
+```rust
+pub(crate) fn update(&mut self, row_id: RowId, left_child: PageId) -> TablePageResult<()>
+```
+
+**Updates in-place** (interior cells are fixed size).
+
+**Errors:**
+- `TablePageError::RowIdNotFound` - Separator doesn't exist
+
+**Example:**
+
+```rust
+interior.insert(50, 10).unwrap();
+interior.update(50, 20).unwrap(); // Change pointer
+assert_eq!(interior.search(50).unwrap().unwrap().left_child, 20);
+```
+
+#### delete
+
+Deletes a separator cell.
+
+```rust
+pub(crate) fn delete(&mut self, row_id: RowId) -> TablePageResult<()>
+```
+
+**Errors:**
+- `TablePageError::RowIdNotFound` - Separator doesn't exist
+
+#### rightmost_child / set_rightmost_child
+
+Gets or sets the rightmost child pointer.
+
+```rust
+pub(crate) fn rightmost_child(&self) -> PageId
+pub(crate) fn set_rightmost_child(&mut self, page_id: PageId) -> TablePageResult<()>
+```
+
+**Example:**
+
+```rust
+let mut interior = TableInteriorPageMut::from_bytes(&mut page).unwrap();
+assert_eq!(interior.rightmost_child(), 99);
+interior.set_rightmost_child(123).unwrap();
+```
+
+#### defragment
+
+Compacts live cells and reclaims dead space.
+
+```rust
+pub(crate) fn defragment(&mut self) -> TablePageResult<()>
+```
+
+**Note:** Interior cells are fixed-size, so fragmentation is less common than in leaf pages.
+
+#### cell_count / free_space
+
+Same as leaf pages.
+
+---
+
+## Runtime Page Type Dispatch
+
+### TablePageRef / TablePageMut
+
+Wrappers that dispatch to leaf or interior pages at runtime.
+
+```rust
+pub(crate) enum TablePageRef<'a> {
+    Leaf(TableLeafPageRef<'a>),
+    Interior(TableInteriorPageRef<'a>),
+}
+
+pub(crate) enum TablePageMut<'a> {
+    Leaf(TableLeafPageMut<'a>),
+    Interior(TableInteriorPageMut<'a>),
+}
+```
+
+#### from_bytes
+
+Deserializes a page of unknown type.
+
+```rust
+pub(crate) fn from_bytes(page: &'a [u8; PAGE_SIZE]) -> TablePageResult<Self>
+```
+
+**Example:**
+
+```rust
+let page_ref = TablePageRef::from_bytes(&page).unwrap();
+match page_ref {
+    TablePageRef::Leaf(leaf) => println!("Leaf with {} cells", leaf.cell_count()),
+    TablePageRef::Interior(interior) => println!("Interior node"),
+}
+```
+
+---
+
+## Error Types
+
+### TablePageError
+
+```rust
+pub(crate) enum TablePageError {
+    InvalidPageType { page_type: u8 },
+    CorruptPage(TablePageCorruptionKind),
+    CorruptCell { slot_index: u16 },
+    DuplicateRowId { row_id: RowId },
+    RowIdNotFound { row_id: RowId },
+    CellTooLarge { len: usize, max: usize },
+    PageFull { needed: usize, available: usize },
+}
+```
+
+<ParamField path="InvalidPageType">
+  Page type byte is not 1 (leaf) or 2 (interior).
+</ParamField>
+
+<ParamField path="CorruptPage">
+  Header validation failed. See `TablePageCorruptionKind` for details.
+</ParamField>
+
+<ParamField path="CorruptCell">
+  Cell at the given slot index is malformed or out of bounds.
+</ParamField>
+
+<ParamField path="DuplicateRowId">
+  Attempted to insert a row ID that already exists.
+</ParamField>
+
+<ParamField path="RowIdNotFound">
+  Attempted to update or delete a non-existent row ID.
+</ParamField>
+
+<ParamField path="CellTooLarge">
+  Payload exceeds 65,535 bytes (leaf) or cell is otherwise too large.
+</ParamField>
+
+<ParamField path="PageFull">
+  Insufficient space for the operation even after defragmentation.
+</ParamField>
+
+### TablePageCorruptionKind
+
+```rust
+pub(crate) enum TablePageCorruptionKind {
+    InvalidCellContentStart,
+    SlotIndexOutOfBounds,
+    SlotDirectoryOverlapsCellContent,
+    SlotDirectoryExceedsPageSize,
+    CellTooShort,
+    CellPayloadOutOfBounds,
+    CellContentUnderflow,
+}
+```
+
+Detailed corruption diagnostics for debugging.
+
+---
+
+## Constants
+
+<ParamField path="LEAF_PAGE_TYPE" type="u8">
+  Page type identifier for leaf pages: `1`
+</ParamField>
+
+<ParamField path="INTERIOR_PAGE_TYPE" type="u8">
+  Page type identifier for interior pages: `2`
+</ParamField>
+
+<ParamField path="LEAF_HEADER_SIZE" type="usize">
+  Leaf page header size: `8` bytes
+</ParamField>
+
+<ParamField path="INTERIOR_HEADER_SIZE" type="usize">
+  Interior page header size: `16` bytes
+</ParamField>
+
+<ParamField path="PAGE_DATA_END" type="usize">
+  End of usable page data (before checksum): `4092` bytes
+</ParamField>
+
+---
+
+## Implementation Notes
+
+### Slotted Page Layout
+
+- **Slot directory** grows from the header toward the page end
+- **Cell content** grows from the page end toward the header
+- Free space is the gap between them
+- Defragmentation moves cells contiguously to maximize free space
+
+### Row ID Ordering
+
+- Both leaf and interior pages maintain slots in sorted order by row ID
+- Binary search provides O(log n) lookups
+- Insertions shift subsequent slots (O(n) cost)
+
+### Maximum Sizes
+
+- **Leaf payload:** 65,535 bytes (limited by `u16` length field)
+- **Practical leaf payload:** ~4,070 bytes per cell (including overhead)
+- **Cells per page:** Varies, typically 50-400 depending on payload size
+- **Interior cells:** Fixed at 16 bytes each, ~250 cells per page
+
+### Fragmentation
+
+- **Deletion:** Leaves dead space until defragmentation
+- **Update:** If size changes, old cell becomes dead space
+- **Automatic defrag:** Triggered once by insert/update before reporting page full
+- **Manual defrag:** Call `defragment()` explicitly to reclaim space
+
+## Related Types
+
+- **PageCache** - Caches table pages in memory
+- **RowId** - Type alias for `u64`, row identifier
+- **PageId** - Type alias for `u64`, page identifier
+- **PAGE_SIZE** - Constant defining page size (4096 bytes)

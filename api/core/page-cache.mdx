@@ -1,0 +1,476 @@
+---
+title: PageCache
+description: Buffer pool with CLOCK replacement policy
+---
+
+## Overview
+
+`PageCache` implements a buffer pool that caches database pages in memory with a CLOCK (second-chance) eviction policy. It provides pinning semantics to prevent eviction of in-use pages and automatic writeback of dirty pages.
+
+**Module:** `databas_core::page_cache`
+
+**Visibility:** `pub(crate)` - Internal to the core crate
+
+## Structure
+
+```rust
+pub(crate) struct PageCache {
+    disk_manager: DiskManager,
+    frames: Vec<Frame>,
+    page_table: HashMap<PageId, FrameId>,
+    clock_hand: FrameId,
+}
+```
+
+<ParamField path="disk_manager" type="DiskManager">
+  Underlying disk manager for reading and writing pages.
+</ParamField>
+
+<ParamField path="frames" type="Vec<Frame>">
+  Fixed-size array of in-memory page frames. Each frame can hold one page.
+</ParamField>
+
+<ParamField path="page_table" type="HashMap<PageId, FrameId>">
+  Mapping from page ID to frame ID for resident pages.
+</ParamField>
+
+<ParamField path="clock_hand" type="FrameId">
+  Current position of the CLOCK hand for victim selection.
+</ParamField>
+
+### Frame Structure
+
+```rust
+struct Frame {
+    page_id: Option<PageId>,
+    data: [u8; PAGE_SIZE],
+    reference: bool,
+    dirty: bool,
+    pin_count: u32,
+}
+```
+
+<ParamField path="page_id" type="Option<PageId>">
+  Page currently stored in this frame, or `None` if empty.
+</ParamField>
+
+<ParamField path="data" type="[u8; PAGE_SIZE]">
+  4096-byte buffer containing the page data.
+</ParamField>
+
+<ParamField path="reference" type="bool">
+  CLOCK reference bit. Set on access, cleared by CLOCK algorithm.
+</ParamField>
+
+<ParamField path="dirty" type="bool">
+  Whether the page has been modified since it was loaded or last flushed.
+</ParamField>
+
+<ParamField path="pin_count" type="u32">
+  Number of active `PinGuard` instances referencing this frame. Cannot be evicted if > 0.
+</ParamField>
+
+## Methods
+
+### new
+
+Creates a new page cache with a fixed number of frames.
+
+```rust
+pub(crate) fn new(disk_manager: DiskManager, frame_count: usize) -> PageCacheResult<Self>
+```
+
+<ParamField path="disk_manager" type="DiskManager" required>
+  The disk manager to use for page I/O.
+</ParamField>
+
+<ParamField path="frame_count" type="usize" required>
+  Number of page frames to allocate. Must be at least 1.
+</ParamField>
+
+<ResponseField name="Result" type="PageCacheResult<PageCache>">
+  Returns a new cache with all frames empty and unpinned.
+</ResponseField>
+
+**Errors:**
+- `PageCacheError::InvalidFrameCount` - `frame_count` is 0
+
+**Example:**
+
+```rust
+let file = NamedTempFile::new().unwrap();
+let disk_manager = DiskManager::new(file.path()).unwrap();
+let cache = PageCache::new(disk_manager, 10).unwrap();
+// Cache has 10 frames available
+```
+
+### fetch_page
+
+Fetches a page from disk or cache and returns a pinned guard.
+
+```rust
+pub(crate) fn fetch_page(&mut self, page_id: PageId) -> PageCacheResult<PinGuard<'_>>
+```
+
+<ParamField path="page_id" type="PageId" required>
+  The page to fetch. Must be a valid page in the database file.
+</ParamField>
+
+<ResponseField name="Result" type="PageCacheResult<PinGuard>">
+  Returns a pin guard providing access to the page data. The page remains pinned until the guard is dropped.
+</ResponseField>
+
+**Behavior:**
+- **Cache hit:** Sets reference bit, increments pin count, returns guard
+- **Cache miss:** 
+  - Selects a victim frame using CLOCK algorithm
+  - Flushes victim frame if dirty
+  - Reads requested page from disk
+  - Loads page into frame with `pin_count = 1` and `reference = true`
+  - Updates page table
+
+**Errors:**
+- `PageCacheError::NoEvictableFrame` - All frames are pinned
+- `PageCacheError::Disk(DiskManagerError)` - Disk I/O error
+- `PageCacheError::CorruptPageTableEntry` - Internal corruption detected
+
+**Example:**
+
+```rust
+let mut cache = PageCache::new(disk_manager, 5).unwrap();
+let page_id = 1;
+
+let guard = cache.fetch_page(page_id).unwrap();
+let page_data = guard.page(); // Immutable access
+assert_eq!(page_data.len(), PAGE_SIZE);
+// guard is dropped here, page is unpinned
+```
+
+### new_page
+
+Allocates a new page on disk and returns it pinned in cache.
+
+```rust
+pub(crate) fn new_page(&mut self) -> PageCacheResult<(PageId, PinGuard<'_>)>
+```
+
+<ResponseField name="Result" type="PageCacheResult<(PageId, PinGuard)>">
+  Returns the new page ID and a pin guard for the zero-initialized page.
+</ResponseField>
+
+**Behavior:**
+- Selects a victim frame first (before disk allocation)
+- Calls `DiskManager::new_page()` to extend the file
+- Loads the zero-initialized page into the selected frame
+- Returns the page pinned and ready for writes
+
+**Errors:**
+- `PageCacheError::NoEvictableFrame` - All frames are pinned (disk not modified)
+- `PageCacheError::Disk(DiskManagerError)` - Disk allocation failed
+
+**Example:**
+
+```rust
+let mut cache = PageCache::new(disk_manager, 5).unwrap();
+
+let (page_id, mut guard) = cache.new_page().unwrap();
+assert_eq!(page_id, 1); // First data page
+
+let page = guard.page_mut();
+page[0] = 42; // Write to new page
+// Page is marked dirty automatically
+```
+
+### flush_page
+
+Flushes a single page to disk if it is dirty and unpinned.
+
+```rust
+pub(crate) fn flush_page(&mut self, page_id: PageId) -> PageCacheResult<()>
+```
+
+<ParamField path="page_id" type="PageId" required>
+  The page to flush. May be resident or non-resident.
+</ParamField>
+
+<ResponseField name="Result" type="PageCacheResult<()>">
+  Returns `Ok(())` on success.
+</ResponseField>
+
+**Behavior:**
+- Non-resident pages are a no-op (returns `Ok(())`)
+- Clean pages are a no-op
+- Dirty unpinned pages are written to disk and marked clean
+
+**Errors:**
+- `PageCacheError::PinnedPage` - Cannot flush a pinned page
+- `PageCacheError::Disk(DiskManagerError)` - Disk write failed
+
+**Example:**
+
+```rust
+let mut cache = PageCache::new(disk_manager, 5).unwrap();
+let (page_id, mut guard) = cache.new_page().unwrap();
+
+guard.page_mut()[0] = 99; // Dirty the page
+drop(guard); // Unpin
+
+cache.flush_page(page_id).unwrap(); // Write to disk
+```
+
+### flush_all
+
+Flushes all dirty unpinned pages to disk.
+
+```rust
+pub(crate) fn flush_all(&mut self) -> PageCacheResult<()>
+```
+
+<ResponseField name="Result" type="PageCacheResult<()>">
+  Returns `Ok(())` if all dirty unpinned pages were flushed.
+</ResponseField>
+
+**Behavior:**
+- Iterates through all frames
+- Writes each dirty unpinned page to disk
+- Stops on first error
+
+**Errors:**
+- `PageCacheError::PinnedPage` - Found a dirty pinned page
+- `PageCacheError::Disk(DiskManagerError)` - Disk write failed
+
+**Example:**
+
+```rust
+let mut cache = PageCache::new(disk_manager, 5).unwrap();
+
+// Make some modifications
+{
+    let (_, mut g1) = cache.new_page().unwrap();
+    g1.page_mut()[0] = 1;
+}
+{
+    let (_, mut g2) = cache.new_page().unwrap();
+    g2.page_mut()[0] = 2;
+}
+
+// Flush everything
+cache.flush_all().unwrap();
+```
+
+## PinGuard
+
+`PinGuard` provides safe access to cached pages with RAII-based pinning.
+
+```rust
+pub(crate) struct PinGuard<'a> {
+    page_cache: &'a mut PageCache,
+    frame_id: FrameId,
+}
+```
+
+### page
+
+Returns an immutable reference to the page data.
+
+```rust
+pub(crate) fn page(&self) -> &[u8; PAGE_SIZE]
+```
+
+**Example:**
+
+```rust
+let guard = cache.fetch_page(page_id).unwrap();
+let data = guard.page();
+assert_eq!(data.len(), PAGE_SIZE);
+```
+
+### page_mut
+
+Returns a mutable reference to the page data and marks it dirty.
+
+```rust
+pub(crate) fn page_mut(&mut self) -> &mut [u8; PAGE_SIZE]
+```
+
+**Behavior:**
+- Automatically sets the dirty bit on the frame
+- Page will be written back on eviction or explicit flush
+
+**Example:**
+
+```rust
+let mut guard = cache.fetch_page(page_id).unwrap();
+let data = guard.page_mut();
+data[0] = 42; // Page is now dirty
+```
+
+### Drop behavior
+
+When a `PinGuard` is dropped, the pin count is decremented:
+
+```rust
+impl Drop for PinGuard<'_> {
+    fn drop(&mut self) {
+        // Decrements pin_count
+    }
+}
+```
+
+## Error Types
+
+### PageCacheError
+
+```rust
+pub(crate) enum PageCacheError {
+    Disk(DiskManagerError),
+    NoEvictableFrame,
+    PinnedPage { page_id: u64 },
+    InvalidFrameCount { frame_count: usize },
+    CorruptPageTableEntry { page_id: u64, frame_id: usize, frame_count: usize },
+}
+```
+
+<ParamField path="Disk" type="DiskManagerError">
+  Underlying disk I/O error during read or write.
+</ParamField>
+
+<ParamField path="NoEvictableFrame">
+  All frames are pinned; cannot fetch or allocate new pages. Caller must unpin pages.
+</ParamField>
+
+<ParamField path="PinnedPage" type="{ page_id: u64 }">
+  Attempted to flush a page that is currently pinned.
+</ParamField>
+
+<ParamField path="InvalidFrameCount" type="{ frame_count: usize }">
+  Attempted to create a cache with 0 frames.
+</ParamField>
+
+<ParamField path="CorruptPageTableEntry" type="{ page_id: u64, frame_id: usize, frame_count: usize }">
+  Internal data structure corruption: page table references an invalid frame.
+</ParamField>
+
+### PageCacheResult
+
+```rust
+pub(crate) type PageCacheResult<T> = Result<T, PageCacheError>;
+```
+
+## CLOCK Algorithm
+
+The cache uses the CLOCK (second-chance) replacement algorithm:
+
+1. **Reference bit:** Set to `true` when a page is accessed
+2. **Clock hand:** Iterates through frames circularly
+3. **Victim selection:**
+   - Skip pinned frames (pin_count > 0)
+   - If reference bit is set, clear it and continue (second chance)
+   - If reference bit is clear, select as victim
+   - Scan up to `2 * frame_count` frames before giving up
+
+**Advantages:**
+- Approximates LRU with lower overhead
+- Gives recently accessed pages a second chance
+- No expensive timestamp tracking
+
+**Example behavior:**
+
+```rust
+// Frame state: [A(ref=1), B(ref=0), C(ref=1)], clock_hand=0
+// Fetch D:
+//   - Visit A: pinned=no, ref=1 → clear ref, continue
+//   - Visit B: pinned=no, ref=0 → evict B
+// Result: [A(ref=0), D(ref=1), C(ref=1)], clock_hand=2
+```
+
+## Drop Behavior
+
+`PageCache` performs best-effort flushing on drop:
+
+```rust
+impl Drop for PageCache {
+    fn drop(&mut self) {
+        // Flush all dirty unpinned pages
+        // Ignores write errors (best effort)
+    }
+}
+```
+
+**Note:** Pinned pages cannot be flushed on drop. Always unpin pages before dropping the cache.
+
+## Performance Considerations
+
+### Frame Count
+
+- More frames = higher hit rate, less I/O
+- Too many frames = excessive memory usage
+- Typical range: 128-1024 frames (512 KB - 4 MB)
+
+### Pinning
+
+- Keep pages pinned for the minimum necessary time
+- Excessive pinning leads to `NoEvictableFrame` errors
+- Consider unpinning and re-fetching for long operations
+
+### Flushing
+
+- Explicit `flush_page()` provides durability guarantees
+- Drop-based flushing is best-effort only
+- `flush_all()` before shutdown ensures consistency
+
+## Usage Examples
+
+### Basic read-modify-write
+
+```rust
+let mut cache = PageCache::new(disk_manager, 10).unwrap();
+let page_id = 1;
+
+// Fetch and modify
+{
+    let mut guard = cache.fetch_page(page_id).unwrap();
+    let page = guard.page_mut();
+    page[0] = 42;
+} // Automatically unpinned
+
+// Flush to disk
+cache.flush_page(page_id).unwrap();
+```
+
+### Multiple concurrent pins
+
+```rust
+// Pin two pages simultaneously
+let mut guard1 = cache.fetch_page(1).unwrap();
+let mut guard2 = cache.fetch_page(2).unwrap();
+
+// Read from one, write to another
+let value = guard1.page()[0];
+guard2.page_mut()[0] = value;
+
+// Both unpinned when dropped
+```
+
+### Allocate and initialize
+
+```rust
+let (page_id, mut guard) = cache.new_page().unwrap();
+let page = guard.page_mut();
+
+// Initialize page structure
+page[0] = 1; // Page type
+page[1] = 0; // Cell count
+// ...
+
+drop(guard);
+cache.flush_page(page_id).unwrap();
+```
+
+## Related Types
+
+- **DiskManager** - Underlying disk I/O layer
+- **PinGuard** - RAII guard for pinned pages
+- **PageId** - Type alias for `u64`
+- **FrameId** - Type alias for `usize`
+- **PAGE_SIZE** - Constant defining page size (4096)

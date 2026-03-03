@@ -58,7 +58,8 @@
               "api/core/disk-manager",
               "api/core/database-header",
               "api/core/page-cache",
-              "api/core/table-pages"
+              "api/core/table-pages",
+              "api/core/errors"
             ]
           },
           {
@@ -66,7 +67,8 @@
             "pages": [
               "api/parser/overview",
               "api/parser/lexer",
-              "api/parser/parser"
+              "api/parser/parser",
+              "api/parser/errors"
             ]
           },
           {

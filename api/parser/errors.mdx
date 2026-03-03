@@ -1,0 +1,392 @@
+---
+title: SQL Errors
+description: Error types for SQL parsing and validation in databas_sql_parser
+---
+
+The databas_sql_parser crate provides detailed error reporting for SQL parsing failures, including position tracking and descriptive error messages.
+
+## SQLError
+
+The main error type returned by the lexer and parser.
+
+```rust
+pub struct SQLError<'a> {
+    pub kind: SQLErrorKind<'a>,
+    pub pos: usize,
+}
+```
+
+<ParamField path="kind" type="SQLErrorKind<'a>">
+  The specific kind of parsing error that occurred.
+</ParamField>
+
+<ParamField path="pos" type="usize">
+  Byte offset in the source string where the error was detected.
+</ParamField>
+
+### Constructor
+
+```rust
+pub fn new(kind: SQLErrorKind<'a>, pos: usize) -> Self
+```
+
+Creates a new SQL error with the given kind and position.
+
+**Example:**
+
+```rust
+use databas_sql_parser::error::{SQLError, SQLErrorKind};
+
+let error = SQLError::new(
+    SQLErrorKind::UnexpectedEnd,
+    42
+);
+```
+
+## SQLErrorKind
+
+Enum describing the specific type of parsing error.
+
+```rust
+pub enum SQLErrorKind<'a> {
+    ExpectedCommaOrSemicolon,
+    ExpectedExpression,
+    ExpectedIdentifier { got: TokenKind<'a> },
+    ExpectedInteger { got: TokenKind<'a> },
+    ExpectedNonNegativeInteger { got: i32 },
+    ExpectedOther { expected: TokenKind<'a> },
+    InvalidCharacter { c: char },
+    InvalidNumber,
+    InvalidOperator { op: TokenKind<'a> },
+    InvalidPrefixOperator { op: TokenKind<'a> },
+    InvalidDataType { got: TokenKind<'a> },
+    Other(TokenKind<'a>),
+    UnclosedParenthesis,
+    UnexpectedEnd,
+    UnexpectedTokenKind { expected: TokenKind<'a>, got: TokenKind<'a> },
+    UnterminatedStatement,
+    UnterminatedString,
+    DuplicateConstraint { column: &'a str, constraint: ColumnConstraint },
+}
+```
+
+### Syntax Errors
+
+#### ExpectedCommaOrSemicolon
+```rust
+ExpectedCommaOrSemicolon
+```
+Expected a comma `,` or semicolon `;` but found a different token.
+
+Occurs in contexts like:
+- Column lists in SELECT
+- Value lists in INSERT
+- End of statements
+
+#### ExpectedExpression
+```rust
+ExpectedExpression
+```
+Expected an expression but found a token that cannot start an expression.
+
+**Example that triggers this:**
+```sql
+SELECT FROM users;  -- Missing column expression
+```
+
+#### ExpectedIdentifier
+```rust
+ExpectedIdentifier { got: TokenKind<'a> }
+```
+Expected an identifier (column name, table name) but found a different token.
+
+**Example:**
+```sql
+CREATE TABLE 123 (id INT);  -- Table name must be identifier
+```
+
+#### ExpectedInteger
+```rust
+ExpectedInteger { got: TokenKind<'a> }
+```
+Expected an integer literal but found a different token type.
+
+Occurs with:
+- LIMIT clause
+- OFFSET clause
+
+**Example:**
+```sql
+SELECT * FROM users LIMIT 'ten';  -- LIMIT requires integer
+```
+
+#### ExpectedNonNegativeInteger
+```rust
+ExpectedNonNegativeInteger { got: i32 }
+```
+Expected a non-negative integer but found a negative number.
+
+**Example:**
+```sql
+SELECT * FROM users LIMIT -10;  -- LIMIT must be non-negative
+```
+
+#### ExpectedOther
+```rust
+ExpectedOther { expected: TokenKind<'a> }
+```
+Expected a specific token but found something else.
+
+Generic error for unexpected tokens in specific contexts.
+
+### Lexical Errors
+
+#### InvalidCharacter
+```rust
+InvalidCharacter { c: char }
+```
+Encountered an invalid character that cannot be part of any token.
+
+**Example:**
+```sql
+SELECT @ FROM users;  -- '@' is not a valid character
+```
+
+#### InvalidNumber
+```rust
+InvalidNumber
+```
+Number literal has invalid format and cannot be parsed.
+
+**Example:**
+```sql
+SELECT 3.14.159 FROM pi;  -- Multiple decimal points
+```
+
+#### UnterminatedString
+```rust
+UnterminatedString
+```
+String literal is missing closing quote.
+
+**Example:**
+```sql
+INSERT INTO users (name) VALUES ('Alice;  -- Missing closing '
+```
+
+### Expression Errors
+
+#### InvalidOperator
+```rust
+InvalidOperator { op: TokenKind<'a> }
+```
+Token cannot be used as an infix operator in the current context.
+
+**Example:**
+```sql
+SELECT id AND FROM users;  -- 'FROM' is not an operator
+```
+
+#### InvalidPrefixOperator
+```rust
+InvalidPrefixOperator { op: TokenKind<'a> }
+```
+Token cannot be used as a unary prefix operator.
+
+**Example:**
+```sql
+SELECT + * FROM users;  -- '+' cannot prefix '*'
+```
+
+### Statement Errors
+
+#### InvalidDataType
+```rust
+InvalidDataType { got: TokenKind<'a> }
+```
+Expected a valid data type (INT, FLOAT, TEXT) but found something else.
+
+**Example:**
+```sql
+CREATE TABLE users (id STRING);  -- STRING is not a valid type
+```
+
+#### DuplicateConstraint
+```rust
+DuplicateConstraint { column: &'a str, constraint: ColumnConstraint }
+```
+A column constraint was specified multiple times.
+
+**Example:**
+```sql
+CREATE TABLE users (
+    id INT PRIMARY KEY PRIMARY KEY  -- PRIMARY KEY specified twice
+);
+```
+
+### Structural Errors
+
+#### UnclosedParenthesis
+```rust
+UnclosedParenthesis
+```
+Opening parenthesis has no matching closing parenthesis.
+
+**Example:**
+```sql
+SELECT (id + 1 FROM users;  -- Missing )
+```
+
+#### UnexpectedEnd
+```rust
+UnexpectedEnd
+```
+Input ended unexpectedly while parsing was still in progress.
+
+**Example:**
+```sql
+SELECT * FROM  -- Missing table name
+```
+
+#### UnexpectedTokenKind
+```rust
+UnexpectedTokenKind { expected: TokenKind<'a>, got: TokenKind<'a> }
+```
+Found a specific token when expecting a different specific token.
+
+Most specific error for token mismatches.
+
+**Example:**
+```sql
+SELECT * FORM users;  -- Expected FROM, got FORM (identifier)
+```
+
+#### UnterminatedStatement
+```rust
+UnterminatedStatement
+```
+Statement appears incomplete or malformed.
+
+#### Other
+```rust
+Other(TokenKind<'a>)
+```
+Unexpected token in current parsing context. Generic fallback error.
+
+## Error Display
+
+All error types implement `Display` for human-readable messages:
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let mut parser = Parser::new("SELECT * FORM users");
+match parser.stmt() {
+    Ok(_) => println!("Parsed successfully"),
+    Err(e) => eprintln!("Parse error at position {}: {}", e.pos, e.kind),
+}
+```
+
+Example output:
+```
+Parse error at position 9: expected FROM, got identifier 'FORM'
+```
+
+## Error Recovery
+
+The parser does not attempt error recovery. When an error is encountered:
+
+1. Parsing stops immediately
+2. The error is returned with position information
+3. No partial AST is produced
+
+**Example with multiple statements:**
+
+```rust
+use databas_sql_parser::parser::Parser;
+
+let sql = "
+    SELECT * FROM users;
+    SELECT * FORM products;  -- Error here
+    SELECT * FROM orders;
+";
+
+let parser = Parser::new(sql);
+for result in parser {
+    match result {
+        Ok(stmt) => println!("Parsed: {}", stmt),
+        Err(e) => {
+            eprintln!("Error at {}: {}", e.pos, e.kind);
+            break;  // Stop processing on first error
+        }
+    }
+}
+```
+
+## Position Tracking
+
+The `pos` field contains the byte offset (not character offset) where the error occurred:
+
+```rust
+let sql = "SELECT * FROM users WHERE name = 'Alice";
+let mut parser = Parser::new(sql);
+
+match parser.stmt() {
+    Err(e) => {
+        println!("Error at byte offset: {}", e.pos);
+        // Extract context around error:
+        let start = e.pos.saturating_sub(10);
+        let end = (e.pos + 10).min(sql.len());
+        println!("Context: {}", &sql[start..end]);
+    }
+    _ => {}
+}
+```
+
+## Common Errors and Fixes
+
+### Missing semicolon
+```sql
+-- Error:
+SELECT * FROM users SELECT * FROM products
+
+-- Fix:
+SELECT * FROM users;
+SELECT * FROM products;
+```
+
+### Unterminated string
+```sql
+-- Error:
+INSERT INTO users VALUES ('Alice)
+
+-- Fix:
+INSERT INTO users VALUES ('Alice')
+```
+
+### Wrong keyword spelling
+```sql
+-- Error:
+SELECT * FORM users
+
+-- Fix:
+SELECT * FROM users
+```
+
+### Invalid operator
+```sql
+-- Error:
+SELECT id <> 5 FROM users  -- <> not supported
+
+-- Fix:
+SELECT id != 5 FROM users
+```
+
+### Missing expression
+```sql
+-- Error:
+SELECT , name FROM users
+
+-- Fix:
+SELECT id, name FROM users
+```

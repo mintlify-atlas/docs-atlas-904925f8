@@ -1,0 +1,394 @@
+---
+title: Error Types
+description: Error types and error handling in the databas_core storage engine
+---
+
+The databas_core crate defines a comprehensive error type system for storage operations, corruption detection, and constraint violations.
+
+## StorageError
+
+The main error enum for all storage-level operations.
+
+```rust
+pub enum StorageError {
+    Io(std::io::Error),
+    Corruption(CorruptionError),
+    Constraint(ConstraintError),
+    InvalidArgument(InvalidArgumentError),
+    LimitExceeded(LimitExceededError),
+    Internal(InternalError),
+}
+```
+
+### Io Errors
+
+Wraps standard I/O errors from file operations.
+
+```rust
+StorageError::Io(std::io::Error)
+```
+
+Occurs when:
+- File cannot be opened or created
+- Read/write operations fail
+- Disk space exhausted
+- Permission denied
+
+### Corruption Errors
+
+Database file corruption detected during validation.
+
+```rust
+StorageError::Corruption(CorruptionError)
+```
+
+See [CorruptionError](#corruptionerror) for details.
+
+### Constraint Errors
+
+Database constraint violations.
+
+```rust
+StorageError::Constraint(ConstraintError)
+```
+
+See [ConstraintError](#constrainterror) for details.
+
+### Invalid Argument Errors
+
+Invalid parameters passed to API functions.
+
+```rust
+StorageError::InvalidArgument(InvalidArgumentError)
+```
+
+See [InvalidArgumentError](#invalidargumenterror) for details.
+
+### Limit Exceeded Errors
+
+Resource limits exceeded.
+
+```rust
+StorageError::LimitExceeded(LimitExceededError)
+```
+
+See [LimitExceededError](#limitexceedederror) for details.
+
+### Internal Errors
+
+Internal invariant violations (should not occur in correct code).
+
+```rust
+StorageError::Internal(InternalError)
+```
+
+See [InternalError](#internalerror) for details.
+
+## CorruptionError
+
+Detailed information about database file corruption.
+
+```rust
+pub struct CorruptionError {
+    pub component: CorruptionComponent,
+    pub page_id: Option<u64>,
+    pub kind: CorruptionKind,
+}
+```
+
+<ParamField path="component" type="CorruptionComponent">
+  The database component where corruption was detected.
+</ParamField>
+
+<ParamField path="page_id" type="Option<u64>">
+  The page ID where corruption occurred, if applicable.
+</ParamField>
+
+<ParamField path="kind" type="CorruptionKind">
+  The specific type of corruption detected.
+</ParamField>
+
+### CorruptionComponent
+
+```rust
+pub enum CorruptionComponent {
+    DatabaseHeader,
+    DiskPage,
+    TablePage,
+    TableLeafPage,
+    TableInteriorPage,
+    BTree,
+}
+```
+
+Identifies which database component is corrupted:
+- **DatabaseHeader** - Page 0 header corruption
+- **DiskPage** - Generic page-level corruption
+- **TablePage** - Table page structure corruption
+- **TableLeafPage** - B-tree leaf page corruption
+- **TableInteriorPage** - B-tree interior page corruption
+- **BTree** - B-tree structure invariant violation
+
+### CorruptionKind
+
+```rust
+pub enum CorruptionKind {
+    InvalidFileSize { size: u64, page_size: usize },
+    InvalidChecksum,
+    InvalidHeaderMagic,
+    InvalidHeaderPageSize { expected: usize, actual: u16 },
+    HeaderPageCountMismatch { expected: u64, actual: u64 },
+    HeaderPageCountZero,
+    InvalidPageType { page_type: u8 },
+    InvalidCellContentStart,
+    SlotIndexOutOfBounds,
+    SlotDirectoryOverlapsCellContent,
+    SlotDirectoryExceedsPageSize,
+    CellTooShort,
+    CellPayloadOutOfBounds,
+    CellContentUnderflow,
+    MalformedCell { slot_index: u16 },
+}
+```
+
+#### File-Level Corruption
+
+**InvalidFileSize**
+```rust
+InvalidFileSize { size: u64, page_size: usize }
+```
+Database file size is not a multiple of the page size (4096 bytes).
+
+**InvalidChecksum**
+```rust
+InvalidChecksum
+```
+Page CRC32 checksum validation failed. The page data may be corrupted.
+
+#### Header Corruption
+
+**InvalidHeaderMagic**
+```rust
+InvalidHeaderMagic
+```
+The database header does not contain the expected magic bytes: `"databas format1\0"`
+
+**InvalidHeaderPageSize**
+```rust
+InvalidHeaderPageSize { expected: usize, actual: u16 }
+```
+Page size in the header doesn't match the expected value (4096).
+
+**HeaderPageCountMismatch**
+```rust
+HeaderPageCountMismatch { expected: u64, actual: u64 }
+```
+Page count in the header doesn't match the actual file size.
+
+**HeaderPageCountZero**
+```rust
+HeaderPageCountZero
+```
+Header reports zero pages, which is invalid (must have at least the header page).
+
+#### Page Structure Corruption
+
+**InvalidPageType**
+```rust
+InvalidPageType { page_type: u8 }
+```
+Page has an unrecognized page type byte. Valid types are:
+- `13` - Leaf table page
+- `5` - Interior table page
+
+**InvalidCellContentStart**
+```rust
+InvalidCellContentStart
+```
+Cell content area start offset is invalid (zero or exceeds page size).
+
+**SlotIndexOutOfBounds**
+```rust
+SlotIndexOutOfBounds
+```
+Slot array index exceeds the cell count.
+
+**SlotDirectoryOverlapsCellContent**
+```rust
+SlotDirectoryOverlapsCellContent
+```
+The slot directory has grown into the cell content area.
+
+**SlotDirectoryExceedsPageSize**
+```rust
+SlotDirectoryExceedsPageSize
+```
+The slot directory extends beyond the page boundary.
+
+#### Cell Corruption
+
+**CellTooShort**
+```rust
+CellTooShort
+```
+A cell is shorter than the minimum valid cell size.
+
+**CellPayloadOutOfBounds**
+```rust
+CellPayloadOutOfBounds
+```
+Cell payload extends beyond the page boundary.
+
+**CellContentUnderflow**
+```rust
+CellContentUnderflow
+```
+Cell content area pointer underflowed during allocation.
+
+**MalformedCell**
+```rust
+MalformedCell { slot_index: u16 }
+```
+Cell at the given slot index has an invalid structure.
+
+## ConstraintError
+
+Database constraint violations during data operations.
+
+```rust
+pub enum ConstraintError {
+    DuplicateRowId { row_id: u64 },
+}
+```
+
+**DuplicateRowId**
+```rust
+DuplicateRowId { row_id: u64 }
+```
+Attempted to insert a row with a row ID that already exists in the table.
+
+## InvalidArgumentError
+
+Invalid arguments passed to API functions.
+
+```rust
+pub enum InvalidArgumentError {
+    InvalidPageId { page_id: u64 },
+}
+```
+
+**InvalidPageId**
+```rust
+InvalidPageId { page_id: u64 }
+```
+The specified page ID is out of bounds (greater than or equal to page_count).
+
+## LimitExceededError
+
+Resource or size limits exceeded.
+
+```rust
+pub enum LimitExceededError {
+    CellTooLarge { len: usize, max: usize },
+    PageFull { needed: usize, available: usize },
+    CacheCapacityExhausted,
+}
+```
+
+**CellTooLarge**
+```rust
+CellTooLarge { len: usize, max: usize }
+```
+Cell size exceeds the maximum allowed size for a page.
+
+**PageFull**
+```rust
+PageFull { needed: usize, available: usize }
+```
+Insufficient space on the page to insert the requested cell.
+
+**CacheCapacityExhausted**
+```rust
+CacheCapacityExhausted
+```
+Page cache has no available frames for pinning a new page.
+
+## InternalError
+
+Internal invariant violations that indicate a bug in the database code.
+
+```rust
+pub enum InternalError {
+    InvariantViolation(InvariantViolation),
+}
+```
+
+### InvariantViolation
+
+```rust
+pub enum InvariantViolation {
+    InvalidFrameCount { frame_count: usize },
+    PinnedPageDuringFlush { page_id: u64 },
+    CorruptPageTableEntry { page_id: u64, frame_id: usize, frame_count: usize },
+}
+```
+
+**InvalidFrameCount**
+```rust
+InvalidFrameCount { frame_count: usize }
+```
+Page cache frame count is invalid or inconsistent.
+
+**PinnedPageDuringFlush**
+```rust
+PinnedPageDuringFlush { page_id: u64 }
+```
+Attempted to flush a page that is currently pinned (held by a PinGuard).
+
+**CorruptPageTableEntry**
+```rust
+CorruptPageTableEntry { page_id: u64, frame_id: usize, frame_count: usize }
+```
+Page table entry is corrupt or inconsistent with cache state.
+
+## Error Handling Example
+
+```rust
+use databas_core::disk_manager::DiskManager;
+use databas_core::error::{StorageError, CorruptionKind};
+
+fn open_database(path: &Path) -> Result<DiskManager, StorageError> {
+    match DiskManager::new(path) {
+        Ok(dm) => Ok(dm),
+        Err(StorageError::Corruption(err)) => {
+            match err.kind {
+                CorruptionKind::InvalidHeaderMagic => {
+                    eprintln!("Not a valid databas file");
+                    Err(StorageError::Corruption(err))
+                }
+                CorruptionKind::InvalidChecksum => {
+                    eprintln!("Database file is corrupted");
+                    Err(StorageError::Corruption(err))
+                }
+                _ => Err(StorageError::Corruption(err))
+            }
+        }
+        Err(e) => Err(e)
+    }
+}
+```
+
+## Display Implementation
+
+All error types implement `Display` for human-readable error messages:
+
+```rust
+let err = StorageError::Corruption(CorruptionError {
+    component: CorruptionComponent::DatabaseHeader,
+    page_id: Some(0),
+    kind: CorruptionKind::InvalidHeaderMagic,
+});
+
+println!("{}", err);
+// Output: "corruption in DatabaseHeader (page 0): invalid magic"
+```
